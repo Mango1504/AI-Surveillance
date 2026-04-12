@@ -1,0 +1,13 @@
+train: ../train/images
+val: ../valid/images
+test: ../test/images
+
+nc: 3
+names: ['6', 'phone', 'undefined']
+
+roboflow:
+  workspace: phonedetection-dyjez
+  project: mobile-phone-detection-mtsje-xhoma-hjvql
+  version: 1
+  license: CC BY 4.0
+  url: https://universe.roboflow.com/phonedetection-dyjez/mobile-phone-detection-mtsje-xhoma-hjvql/dataset/1

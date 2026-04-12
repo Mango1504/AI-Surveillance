@@ -1,0 +1,58 @@
+[
+  {
+    "roll_number": "001",
+    "name": "John Smith",
+    "exam_hall": 1,
+    "exam_date": "2024-04-12",
+    "subject": "Mathematics"
+  },
+  {
+    "roll_number": "002",
+    "name": "Jane Doe",
+    "exam_hall": 1,
+    "exam_date": "2024-04-12",
+    "subject": "Mathematics"
+  },
+  {
+    "roll_number": "003",
+    "name": "Michael Johnson",
+    "exam_hall": 2,
+    "exam_date": "2024-04-12",
+    "subject": "Physics"
+  },
+  {
+    "roll_number": "004",
+    "name": "Sarah Williams",
+    "exam_hall": 2,
+    "exam_date": "2024-04-12",
+    "subject": "Physics"
+  },
+  {
+    "roll_number": "005",
+    "name": "David Brown",
+    "exam_hall": 3,
+    "exam_date": "2024-04-12",
+    "subject": "Chemistry"
+  },
+  {
+    "roll_number": "006",
+    "name": "Emma Davis",
+    "exam_hall": 3,
+    "exam_date": "2024-04-12",
+    "subject": "Chemistry"
+  },
+  {
+    "roll_number": "007",
+    "name": "Oliver Martinez",
+    "exam_hall": 4,
+    "exam_date": "2024-04-12",
+    "subject": "English"
+  },
+  {
+    "roll_number": "008",
+    "name": "Sophia Anderson",
+    "exam_hall": 4,
+    "exam_date": "2024-04-12",
+    "subject": "English"
+  }
+]

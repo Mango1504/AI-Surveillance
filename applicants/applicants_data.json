@@ -1,0 +1,16 @@
+[
+  {
+    "photo_file": "student_1.jpg",
+    "roll_number": "001",
+    "name": "Rajesh Kumar Singh",
+    "exam_hall": 1,
+    "exam_date": "2024-04-12",
+    "subject": "Mathematics",
+    "age": 20,
+    "enrollment_year": 2022,
+    "department": "Science",
+    "email": "rajesh.singh@university.edu",
+    "phone": "+91-9876543210",
+    "status": "active"
+  }
+]
