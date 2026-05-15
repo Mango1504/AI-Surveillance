@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { apiService } from '../services/api'
 
-export const useDetectionStatus = (examHall = 1, pollInterval = 1000) => {
+export const useDetectionStatus = (examHall = 1, pollInterval = 800) => {
   const [status, setStatus] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)

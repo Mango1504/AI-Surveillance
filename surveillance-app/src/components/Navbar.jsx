@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { Menu, X, LogOut, AlertCircle } from 'lucide-react'
 import useAuthStore from '../context/authStore'
 import useAlertStore from '../context/alertStore'

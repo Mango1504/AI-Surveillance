@@ -24,7 +24,7 @@ APPLICANTS_PATH = r"C:\Users\write\Desktop\AI Surveillance\applicants"
 GRID_ROWS      = 5          # divide frame into this many rows
 GRID_COLS      = 6          # divide frame into this many columns
 PHONE_CLASS_ID = 67         # YOLOv8 COCO class 67 = cell phone
-CONFIDENCE_MIN = 0.45       # ignore detections below this confidence
+CONFIDENCE_MIN = 0.30       # ignore detections below this confidence (optimized for recall)
 FLASK_HOST     = "0.0.0.0"  # 0.0.0.0 = reachable from other devices on LAN
 FLASK_PORT     = 5000
 POST_DETECT_RECORD_SECS = 5 # keep recording N seconds after phone disappears
@@ -51,6 +51,67 @@ shared_state = {
 # Latest annotated frame as JPEG bytes (for MJPEG stream)
 frame_lock  = threading.Lock()
 latest_jpeg = None
+
+
+# ──────────────────────────────────────────────
+# STREAMING HELPERS (Multithreading)
+# ──────────────────────────────────────────────
+class CameraStream:
+    def __init__(self, src=0):
+        self.stream = cv2.VideoCapture(src)
+        self.stream.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
+        self.stream.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
+        (self.grabbed, self.frame) = self.stream.read()
+        self.stopped = False
+        
+    def start(self):
+        threading.Thread(target=self.update, args=(), daemon=True).start()
+        return self
+        
+    def update(self):
+        while True:
+            if self.stopped:
+                return
+            self.grabbed, self.frame = self.stream.read()
+            if not self.grabbed:
+                time.sleep(0.05)
+                
+    def read(self):
+        return self.grabbed, self.frame
+        
+    def stop(self):
+        self.stopped = True
+        self.stream.release()
+
+
+class FrameEncoder:
+    def __init__(self):
+        self.annotated_frame = None
+        self.stopped = False
+        
+    def start(self):
+        threading.Thread(target=self.update, args=(), daemon=True).start()
+        return self
+        
+    def update(self):
+        global latest_jpeg
+        while True:
+            if self.stopped:
+                return
+            if self.annotated_frame is not None:
+                _, jpeg = cv2.imencode(".jpg", self.annotated_frame, [cv2.IMWRITE_JPEG_QUALITY, 75])
+                with frame_lock:
+                    latest_jpeg = jpeg.tobytes()
+                time.sleep(0.033)  # ~30fps encoding limit
+            else:
+                time.sleep(0.05)
+                
+    def set_frame(self, frame):
+        self.annotated_frame = frame
+        
+    def stop(self):
+        self.stopped = True
+
 
 
 # GRID HELPERS
@@ -85,15 +146,14 @@ def draw_grid(frame, rows, cols, color=(80, 80, 80), thickness=1):
 
 
 def highlight_cell(frame, row, col, rows, cols, color=(0, 255, 120), alpha=0.25):
-    """Tint the grid cell that contains a detected phone."""
     h, w = frame.shape[:2]
     cell_w, cell_h = w // cols, h // rows
-    x1 = col * cell_w  # Ensure exact cell boundaries
-    y2 = row * cell_h  # Ensure exact cell boundaries cell_h
-    x2 = x1 + cell_w
-    y2 = y1 + cell_h
+    cx1 = (col - 1) * cell_w
+    cy1 = (row - 1) * cell_h
+    cx2 = cx1 + cell_w
+    cy2 = cy1 + cell_h
     overlay = frame.copy()
-    cv2.rectangle(overlay, (x1, y1), (x2, y2), color, -1)
+    cv2.rectangle(overlay, (cx1, cy1), (cx2, cy2), color, -1)
     cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0, frame)
     return frame
 
@@ -110,9 +170,9 @@ class ClipRecorder:
 
     def start(self, frame_shape):
         h, w = frame_shape[:2]
-        fourcc   = cv2.VideoWriter_fourcc(*"XVID")
+        fourcc   = cv2.VideoWriter_fourcc(*"mp4v")
         ts       = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.path = os.path.join(SAVE_PATH, f"phone_{ts}.avi")
+        self.path = os.path.join(SAVE_PATH, f"phone_{ts}.mp4")
         self.writer = cv2.VideoWriter(self.path, fourcc, 20.0, (w, h))
         self.active  = True
         print(f"[REC] Started → {self.path}")
@@ -143,14 +203,16 @@ class ClipRecorder:
 def detection_loop():
     global latest_jpeg, shared_state
 
-    model   = YOLO("yolov8m.pt")  # YOLOv8 medium - optimal for phone detection
-    cap     = cv2.VideoCapture(CAMERA_INDEX)
+    model_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "yolov8m.pt"))
+    if not os.path.exists(model_path):
+        model_path = "yolov8n.pt"
+    model = YOLO(model_path, task="detect", verbose=False)
+    
+    cap = CameraStream(CAMERA_INDEX).start()
+    encoder = FrameEncoder().start()
     recorder = ClipRecorder()
 
-    if not cap.isOpened():
-        print("[ERROR] Cannot open camera.")
-        return
-
+    time.sleep(1.0)
     ret, test_frame = cap.read()
     frame_h, frame_w = test_frame.shape[:2] if ret else (480, 640)
 
@@ -164,12 +226,13 @@ def detection_loop():
 
     while True:
         ret, frame = cap.read()
-        if not ret:
+        if not ret or frame is None:
             time.sleep(0.05)
             continue
 
         frame_count += 1
-        results        = model(frame, verbose=False)
+        # Inference with larger image size for 1080p stream
+        results        = model(frame, imgsz=1088, verbose=False)
         detections     = []
         phone_in_frame = False
 
@@ -236,15 +299,14 @@ def detection_loop():
             cv2.circle(annotated, (20, 20), 8, (0, 0, 255), -1)   # red REC dot
 
         # ── Encode for MJPEG stream ──
-        _, jpeg = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 75])
-        with frame_lock:
-            latest_jpeg = jpeg.tobytes()
+        encoder.set_frame(annotated)
 
         cv2.imshow("Phone Detection System", annotated)
         if cv2.waitKey(1) & 0xFF == ord("q"):
             break
 
-    cap.release()
+    cap.stop()
+    encoder.stop()
     if recorder.active:
         recorder.stop()
     cv2.destroyAllWindows()

@@ -25,7 +25,7 @@ export default function FeedView({ examHall = 1 }) {
         })
       })
     }
-  }, [status?.phone_detected, status?.detections, examHall, addAlert])
+  }, [status?.phone_detected, status?.detections, status?.timestamp, status?.clip_path, examHall, addAlert])
 
   const renderFeedGrid = () => {
     if (!gridInfo) return null

@@ -1,103 +1,80 @@
-import { useState } from 'react'
-import { PlayCircle, X } from 'lucide-react'
-
-// Mock records data - replace with actual API calls
-const MOCK_RECORDS = [
-  {
-    id: 1,
-    examHall: 1,
-    row: 2,
-    col: 3,
-    alertType: 'Phone Detection',
-    confidence: 0.95,
-    timestamp: new Date(Date.now() - 3600000).toISOString(),
-    videoPath: '/videos/phone_001.avi',
-  },
-  {
-    id: 2,
-    examHall: 1,
-    row: 1,
-    col: 2,
-    alertType: 'Phone Detection',
-    confidence: 0.87,
-    timestamp: new Date(Date.now() - 7200000).toISOString(),
-    videoPath: '/videos/phone_002.avi',
-  },
-  {
-    id: 3,
-    examHall: 2,
-    row: 3,
-    col: 4,
-    alertType: 'Phone Detection',
-    confidence: 0.92,
-    timestamp: new Date(Date.now() - 10800000).toISOString(),
-    videoPath: '/videos/phone_003.avi',
-  },
-]
+import { useState, useEffect } from 'react'
+import { PlayCircle, X, RefreshCw } from 'lucide-react'
+import { apiService } from '../services/api'
 
 export default function RecordsView() {
-  const [records] = useState(MOCK_RECORDS)
+  const [records, setRecords] = useState([])
   const [videoModal, setVideoModal] = useState(null)
-  const [filteredRecords, setFilteredRecords] = useState(MOCK_RECORDS)
-  const [examHallFilter, setExamHallFilter] = useState('all')
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
 
-  const handleExamHallFilter = (hall) => {
-    setExamHallFilter(hall)
-    if (hall === 'all') {
-      setFilteredRecords(records)
-    } else {
-      setFilteredRecords(records.filter((r) => r.examHall === parseInt(hall)))
+  const fetchRecords = async () => {
+    try {
+      setLoading(true)
+      setError(null)
+      const data = await apiService.getRecords()
+      // Map backend incident data to the format the UI expects
+      const mapped = data.map((incident) => ({
+        id: incident.id,
+        examHall: 1,
+        row: 0,
+        col: 0,
+        alertType: incident.labels || 'Detection',
+        candidateId: incident.candidate_id || 'Unknown',
+        confidence: 0,
+        timestamp: new Date(incident.timestamp * 1000).toISOString(),
+        videoPath: incident.clip_path || null,
+        report: incident.report || '',
+      }))
+      setRecords(mapped)
+    } catch (err) {
+      console.error('Failed to fetch records:', err)
+      setError('Failed to load records from backend')
+    } finally {
+      setLoading(false)
     }
   }
+
+  useEffect(() => {
+    fetchRecords()
+    // Auto-refresh every 15 seconds
+    const interval = setInterval(fetchRecords, 15000)
+    return () => clearInterval(interval)
+  }, [])
 
   return (
     <div className="space-y-4">
       <div className="flex justify-between items-center">
-        <h2 className="text-2xl font-bold text-white">Video Records</h2>
-        <div className="flex gap-2">
-          <button
-            onClick={() => handleExamHallFilter('all')}
-            className={`px-4 py-2 rounded-lg transition ${
-              examHallFilter === 'all'
-                ? 'bg-primary text-white'
-                : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-            }`}
-          >
-            All
-          </button>
-          <button
-            onClick={() => handleExamHallFilter('1')}
-            className={`px-4 py-2 rounded-lg transition ${
-              examHallFilter === '1'
-                ? 'bg-primary text-white'
-                : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-            }`}
-          >
-            Hall 1
-          </button>
-          <button
-            onClick={() => handleExamHallFilter('2')}
-            className={`px-4 py-2 rounded-lg transition ${
-              examHallFilter === '2'
-                ? 'bg-primary text-white'
-                : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-            }`}
-          >
-            Hall 2
-          </button>
-        </div>
+        <h2 className="text-2xl font-bold text-white">Video Records ({records.length})</h2>
+        <button
+          onClick={fetchRecords}
+          className="flex items-center gap-2 px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition"
+        >
+          <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
+          Refresh
+        </button>
       </div>
 
-      {filteredRecords.length === 0 ? (
+      {error && (
+        <div className="bg-red-900 border border-red-700 text-red-100 px-4 py-3 rounded-lg">
+          <p>{error}</p>
+        </div>
+      )}
+
+      {loading && records.length === 0 ? (
+        <div className="bg-gray-800 rounded-lg p-12 text-center border border-gray-700">
+          <div className="text-gray-400 text-lg">Loading records...</div>
+        </div>
+      ) : records.length === 0 ? (
         <div className="bg-gray-800 rounded-lg p-12 text-center border border-gray-700">
           <div className="text-gray-400 text-lg">No records found</div>
           <p className="text-gray-500 text-sm mt-1">
-            Recorded videos will appear here
+            Recorded videos will appear here automatically when anomalies are detected
           </p>
         </div>
       ) : (
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-          {filteredRecords.map((record) => (
+          {records.map((record) => (
             <div
               key={record.id}
               className="bg-gray-800 rounded-lg overflow-hidden border border-gray-700 hover:border-gray-500 transition"
@@ -105,14 +82,23 @@ export default function RecordsView() {
               {/* Thumbnail */}
               <div className="relative bg-black aspect-video flex items-center justify-center group cursor-pointer">
                 <div className="absolute inset-0 bg-gradient-to-br from-gray-800 to-black flex items-center justify-center">
-                  <PlayCircle size={48} className="text-gray-500" />
+                  {record.videoPath ? (
+                    <PlayCircle size={48} className="text-gray-500" />
+                  ) : (
+                    <div className="text-center">
+                      <PlayCircle size={48} className="text-gray-600 mx-auto" />
+                      <p className="text-gray-600 text-xs mt-2">No video</p>
+                    </div>
+                  )}
                 </div>
-                <button
-                  onClick={() => setVideoModal(record)}
-                  className="absolute inset-0 opacity-0 group-hover:opacity-100 transition flex items-center justify-center bg-black bg-opacity-50"
-                >
-                  <PlayCircle size={60} className="text-accent" />
-                </button>
+                {record.videoPath && (
+                  <button
+                    onClick={() => setVideoModal(record)}
+                    className="absolute inset-0 opacity-0 group-hover:opacity-100 transition flex items-center justify-center bg-black bg-opacity-50"
+                  >
+                    <PlayCircle size={60} className="text-accent" />
+                  </button>
+                )}
               </div>
 
               {/* Info */}
@@ -122,20 +108,11 @@ export default function RecordsView() {
                     <p className="font-semibold text-white">
                       {record.alertType}
                     </p>
-                    <p className="text-sm text-gray-400">ExamHall {record.examHall}</p>
+                    <p className="text-sm text-gray-400">Candidate: {record.candidateId}</p>
                   </div>
-                  <span className="bg-accent text-secondary px-2 py-1 rounded text-xs font-bold">
-                    {(record.confidence * 100).toFixed(0)}%
-                  </span>
                 </div>
 
                 <div className="space-y-1 text-sm mb-3">
-                  <p className="text-gray-400">
-                    <span className="text-gray-500">Position:</span>{' '}
-                    <span className="text-white font-mono">
-                      Row {record.row}, Col {record.col}
-                    </span>
-                  </p>
                   <p className="text-gray-400">
                     <span className="text-gray-500">Date:</span>{' '}
                     <span className="text-white">
@@ -148,13 +125,24 @@ export default function RecordsView() {
                       {new Date(record.timestamp).toLocaleTimeString()}
                     </span>
                   </p>
+                  {record.report && (
+                    <p className="text-gray-400 text-xs mt-2 line-clamp-2">
+                      <span className="text-gray-500">Report:</span>{' '}
+                      <span className="text-gray-300">{record.report}</span>
+                    </p>
+                  )}
                 </div>
 
                 <button
-                  onClick={() => setVideoModal(record)}
-                  className="w-full py-2 bg-primary hover:bg-blue-700 text-white rounded transition font-semibold text-sm"
+                  onClick={() => record.videoPath && setVideoModal(record)}
+                  disabled={!record.videoPath}
+                  className={`w-full py-2 rounded transition font-semibold text-sm ${
+                    record.videoPath
+                      ? 'bg-primary hover:bg-blue-700 text-white'
+                      : 'bg-gray-700 text-gray-500 cursor-not-allowed'
+                  }`}
                 >
-                  Play Recording
+                  {record.videoPath ? 'Play Recording' : 'No Recording Available'}
                 </button>
               </div>
             </div>
@@ -173,7 +161,7 @@ export default function RecordsView() {
                   {videoModal.alertType}
                 </h3>
                 <p className="text-sm text-gray-400">
-                  Row {videoModal.row}, Col {videoModal.col} • ExamHall {videoModal.examHall}
+                  Candidate: {videoModal.candidateId} • {new Date(videoModal.timestamp).toLocaleString()}
                 </p>
               </div>
               <button
@@ -184,29 +172,24 @@ export default function RecordsView() {
               </button>
             </div>
 
-            {/* Video Player */}
-            <div className="bg-black aspect-video flex items-center justify-center">
-              <video
-                src={videoModal.videoPath}
-                controls
-                autoPlay
-                className="w-full h-full"
-              />
+            {/* Video Player (MJPEG stream) */}
+            <div className="bg-black aspect-video flex items-center justify-center overflow-hidden">
+              {videoModal.videoPath ? (
+                <img
+                  src={videoModal.videoPath}
+                  alt="Recording playback"
+                  className="w-full h-full object-contain"
+                />
+              ) : (
+                <p className="text-gray-500">No video available for this record</p>
+              )}
             </div>
 
             {/* Details */}
-            <div className="p-4 bg-gray-750 grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+            <div className="p-4 bg-gray-750 grid grid-cols-2 md:grid-cols-3 gap-4 text-sm">
               <div>
-                <p className="text-gray-500">Confidence</p>
-                <p className="text-white font-semibold">
-                  {(videoModal.confidence * 100).toFixed(1)}%
-                </p>
-              </div>
-              <div>
-                <p className="text-gray-500">Position</p>
-                <p className="text-white font-semibold">
-                  R{videoModal.row}C{videoModal.col}
-                </p>
+                <p className="text-gray-500">Candidate</p>
+                <p className="text-white font-semibold">{videoModal.candidateId}</p>
               </div>
               <div>
                 <p className="text-gray-500">Date</p>
@@ -221,6 +204,14 @@ export default function RecordsView() {
                 </p>
               </div>
             </div>
+
+            {/* Report */}
+            {videoModal.report && (
+              <div className="p-4 border-t border-gray-700">
+                <p className="text-gray-500 text-sm mb-1">VLM Report</p>
+                <p className="text-gray-300 text-sm">{videoModal.report}</p>
+              </div>
+            )}
           </div>
         </div>
       )}

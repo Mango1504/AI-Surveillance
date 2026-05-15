@@ -108,25 +108,17 @@ export default function AlertsTab() {
               </button>
             </div>
 
-            {/* Video Player */}
-            <div className="bg-black aspect-video flex items-center justify-center">
-              <div className="text-center">
-                <p className="text-gray-400 mb-4">Video Player</p>
-                <div className="text-sm text-gray-500">
-                  {selectedAlert.clip_path ? (
-                    <div>
-                      <p className="mb-2">Clip: {selectedAlert.clip_path}</p>
-                      <video
-                        src={selectedAlert.clip_path}
-                        className="w-full"
-                        controls
-                      />
-                    </div>
-                  ) : (
-                    <p>No video available for this alert</p>
-                  )}
-                </div>
-              </div>
+            {/* Video Player (MJPEG stream) */}
+            <div className="bg-black aspect-video flex items-center justify-center overflow-hidden">
+              {selectedAlert.clip_path ? (
+                <img
+                  src={selectedAlert.clip_path}
+                  alt="Alert recording playback"
+                  className="w-full h-full object-contain"
+                />
+              ) : (
+                <p className="text-gray-500">No video available for this alert</p>
+              )}
             </div>
 
             {/* Details */}

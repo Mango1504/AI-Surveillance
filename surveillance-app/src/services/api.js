@@ -21,16 +21,6 @@ export const apiService = {
 
   getStreamUrl: () => `${API_BASE_URL}/stream`,
 
-  getSnapshot: async () => {
-    try {
-      const response = await api.get('/snapshot', { responseType: 'blob' })
-      return URL.createObjectURL(response.data)
-    } catch (error) {
-      console.error('Error fetching snapshot:', error)
-      throw error
-    }
-  },
-
   getGridInfo: async () => {
     try {
       const response = await api.get('/grid-info')
@@ -41,14 +31,79 @@ export const apiService = {
     }
   },
 
-  // Mock video endpoints (replace with actual implementation)
-  getVideoClip: async (alertId) => {
+  // Fetch real recorded incidents from backend
+  getRecords: async () => {
     try {
-      // This would fetch from the recordings stored by Python code
-      // For now returning mock path
-      return `/videos/phone_${alertId}.avi`
+      const response = await api.get('/incidents')
+      return response.data
     } catch (error) {
-      console.error('Error fetching video:', error)
+      console.error('Error fetching records:', error)
+      throw error
+    }
+  },
+
+  // Identified students in current frame
+  getIdentifiedStudents: async () => {
+    try {
+      const response = await api.get('/identified-students')
+      return response.data
+    } catch (error) {
+      console.error('Error fetching identified students:', error)
+      return { identified_students: [] }
+    }
+  },
+
+  // System hardware/performance info
+  getSystemInfo: async () => {
+    try {
+      const response = await api.get('/system-info')
+      return response.data
+    } catch (error) {
+      console.error('Error fetching system info:', error)
+      throw error
+    }
+  },
+
+  // Read current config
+  getConfig: async () => {
+    try {
+      const response = await api.get('/config')
+      return response.data
+    } catch (error) {
+      console.error('Error fetching config:', error)
+      throw error
+    }
+  },
+
+  // Update config
+  updateConfig: async (configData) => {
+    try {
+      const response = await api.post('/config', configData)
+      return response.data
+    } catch (error) {
+      console.error('Error updating config:', error)
+      throw error
+    }
+  },
+
+  // Purge biometric data
+  purgeBiometrics: async () => {
+    try {
+      const response = await api.post('/purge-biometrics')
+      return response.data
+    } catch (error) {
+      console.error('Error purging biometrics:', error)
+      throw error
+    }
+  },
+
+  // Reset session (clear all incidents)
+  resetSession: async () => {
+    try {
+      const response = await api.post('/reset-session')
+      return response.data
+    } catch (error) {
+      console.error('Error resetting session:', error)
       throw error
     }
   },

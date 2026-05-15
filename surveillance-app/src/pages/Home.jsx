@@ -188,7 +188,7 @@ export default function Home() {
       {/* Footer */}
       <footer className="border-t border-gray-700 bg-secondary py-8">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center text-gray-400">
-          <p>© 2024 AI Surveillance System. All rights reserved.</p>
+          <p>© 2026 AI Surveillance System. All rights reserved.</p>
           <p className="text-sm mt-2">Unauthorized access prohibited</p>
         </div>
       </footer>

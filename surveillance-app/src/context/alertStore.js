@@ -4,13 +4,27 @@ const useAlertStore = create((set, get) => ({
   alerts: [],
   
   addAlert: (alert) => {
+    const now = Date.now()
+    const existing = get().alerts
+
+    // Deduplicate: skip if same grid cell was alerted within 5 seconds
+    const isDuplicate = existing.some(
+      (a) =>
+        a.row === alert.row &&
+        a.col === alert.col &&
+        a.examHall === alert.examHall &&
+        (now - a.id) < 5000
+    )
+    if (isDuplicate) return
+
     const newAlert = {
-      id: Date.now(),
+      id: now,
       timestamp: new Date().toISOString(),
       ...alert,
     }
     set((state) => ({
-      alerts: [newAlert, ...state.alerts],
+      // Cap at 50 entries, newest first
+      alerts: [newAlert, ...state.alerts].slice(0, 50),
     }))
   },
 
