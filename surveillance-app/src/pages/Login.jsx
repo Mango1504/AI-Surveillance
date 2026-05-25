@@ -17,21 +17,22 @@ export default function Login() {
     setError('')
     setIsLoading(true)
 
-    // Simulate authentication
-    if (username.trim() && password.trim()) {
-      setTimeout(() => {
-        login({
-          username,
-          isAdmin: false,
-          loginTime: new Date().toISOString(),
-        })
-        setIsLoading(false)
-        navigate('/dashboard')
-      }, 500)
-    } else {
+    // User login only — admin has a separate login page
+    if (!username.trim() || !password.trim()) {
       setError('Please enter username and password')
       setIsLoading(false)
+      return
     }
+
+    setTimeout(() => {
+      login({
+        username,
+        isAdmin: false,
+        loginTime: new Date().toISOString(),
+      })
+      setIsLoading(false)
+      navigate('/dashboard')
+    }, 500)
   }
 
   return (
@@ -122,26 +123,13 @@ export default function Login() {
           <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
             <p className="text-sm text-gray-400 font-semibold mb-2">Demo Credentials:</p>
             <p className="text-xs text-gray-500">
-              <strong className="text-gray-300">Username:</strong> user
+              <strong className="text-gray-300">Username:</strong> any username
             </p>
             <p className="text-xs text-gray-500">
               <strong className="text-gray-300">Password:</strong> any password
             </p>
           </div>
         </form>
-
-        {/* Links */}
-        <div className="text-center mt-6">
-          <p className="text-gray-400">
-            Admin? Go to{' '}
-            <button
-              onClick={() => navigate('/admin')}
-              className="text-accent hover:underline font-semibold"
-            >
-              Admin Panel
-            </button>
-          </p>
-        </div>
       </div>
     </div>
   )

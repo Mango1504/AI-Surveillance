@@ -1,10 +1,9 @@
-import { Shield, Video, Users, History, Settings, FileText, HelpCircle, Terminal } from 'lucide-react'
+import { Shield, Video, Users, History, FileText, HelpCircle, Terminal } from 'lucide-react'
 
 const navItems = [
   { id: 'live', label: 'Live Hub', icon: Video },
   { id: 'directory', label: 'Student Directory', icon: Users },
   { id: 'archive', label: 'Incident Archive', icon: History },
-  { id: 'admin', label: 'Admin Panel', icon: Settings },
 ]
 
 export default function Sidebar({ currentPage, onPageChange }) {

@@ -59,20 +59,20 @@ class AdaptiveThrottle:
             self.config.ENABLE_OBJECT_DET = False
             self.config.ENABLE_GAZE = False
             self.config.FACE_BATCH_SIZE = 1
-            self._log_change("EMERGENCY", "CPU above 90%", cpu, ram_free_mb, drop_rate)
+            self._log_change("EMERGENCY", "CPU above 90% — detection suspended", cpu, ram_free_mb, drop_rate)
             self.stable_since = now
             return
 
         if cpu > CPU_THROTTLE_HARD:
+            # Increase frame skip only — keep detection enabled so we don't miss events
             self.config.DETECT_EVERY_N = min(8, self.config.DETECT_EVERY_N + 2)
-            self.config.ENABLE_OBJECT_DET = False
             self.config.FACE_BATCH_SIZE = max(1, self.config.FACE_BATCH_SIZE - 1)
-            self._log_change("HARD_THROTTLE", "CPU 80-90%", cpu, ram_free_mb, drop_rate)
+            self._log_change("HARD_THROTTLE", "CPU 80-90% — increasing frame skip", cpu, ram_free_mb, drop_rate)
             self.stable_since = now
             return
 
         if cpu > CPU_THROTTLE_SOFT or drop_rate > 0.20:
-            self.config.DETECT_EVERY_N = min(8, self.config.DETECT_EVERY_N + 1)
+            self.config.DETECT_EVERY_N = min(6, self.config.DETECT_EVERY_N + 1)
             self.config.FACE_BATCH_SIZE = max(1, self.config.FACE_BATCH_SIZE - 1)
             self._log_change("SOFT_THROTTLE", "CPU 65-80% or frame drops above 20%", cpu, ram_free_mb, drop_rate)
             self.stable_since = now
@@ -103,7 +103,8 @@ class AdaptiveThrottle:
                 changed = True
             if changed:
                 self._log_change("RECOVERY", "Stable spare capacity for 30s", cpu, ram_free_mb, drop_rate)
-                self.stable_since = now
+            # Always reset stable_since so hysteresis re-arms for next cycle
+            self.stable_since = now
 
     def stop(self):
         self.running = False

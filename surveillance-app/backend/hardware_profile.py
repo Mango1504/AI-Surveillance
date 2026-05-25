@@ -160,7 +160,7 @@ def _camera_backend(source: Any) -> Tuple[cv2.VideoCapture, str]:
         cap = cv2.VideoCapture(source, cv2.CAP_FFMPEG)
         if cap.isOpened():
             return cap, "ffmpeg"
-    return cv2.VideoCapture(source), "opencv"
+    return cv2.VideoCapture(source, cv2.CAP_DSHOW) if platform.system() == "Windows" else cv2.VideoCapture(source), "opencv"
 
 
 def probe_cameras(sources: Sequence[Any], tier: str = "MID") -> Dict[Any, Dict[str, Any]]:

@@ -1,4 +1,5 @@
 import os
+import torch
 from typing import Any, List, Tuple
 
 from hardware_profile import get_hardware_profile
@@ -74,6 +75,9 @@ class ConfigManager:
         self.CLIP_CODEC = self._get_clip_codec()
 
     def _get_detect_n(self) -> int:
+        # GPU can process every frame without breaking a sweat
+        if self.profile.has_cuda or self.profile.has_mps:
+            return 1
         if self.profile.tier == "ULTRA":
             return 1
         if self.profile.tier == "HIGH":
@@ -95,6 +99,9 @@ class ConfigManager:
         return {"ULTRA": 32, "HIGH": 24, "MID": 12, "LOW": 6}[self.profile.tier]
 
     def _get_object_model(self) -> str:
+        # RTX 3060 has ample VRAM — use the medium model for much better accuracy
+        if self.profile.has_cuda or self.profile.has_mps:
+            return "yolov8m.pt"
         if self.profile.tier == "ULTRA":
             return "yolov8m.pt"
         if self.profile.tier == "HIGH":
@@ -102,8 +109,9 @@ class ConfigManager:
         return "yolov8n.pt"
 
     def _get_backend(self) -> str:
-        if self.profile.has_cuda and "CUDAExecutionProvider" in self.profile.onnx_providers:
-            return "onnx-cuda"
+        # Use torch directly — onnxruntime may not be installed
+        if self.profile.has_cuda:
+            return "cuda"
         if self.profile.has_mps:
             return "mps"
         if self.profile.has_openvino:
@@ -113,6 +121,9 @@ class ConfigManager:
         return "cpu"
 
     def _lowest_common_detection_res(self) -> Tuple[int, int]:
+        # On GPU, use a higher detection resolution for better accuracy
+        if self.profile.has_cuda or self.profile.has_mps:
+            return (640, 640)
         resolutions = [
             tuple(cap.get("detection_res", (640, 360)))
             for cap in self.profile.camera_caps.values()

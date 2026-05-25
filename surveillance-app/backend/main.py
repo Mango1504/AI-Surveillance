@@ -67,10 +67,21 @@ disk_writer = DiskWriter(output_dir=VIDEOS_DIR).start()
 evidence = EvidenceCache(key_path=os.path.join(proj_root, "secret.key"))
 session_id = evidence.start_session()
 
-detectors = [ExamDetector() for _ in range(config.NUM_DETECTION_WORKERS)]
+# On CUDA, GPU inference is serialised by ExamDetector._model_lock, so
+# extra workers beyond 2 only add thread overhead without increasing throughput.
+import torch as _torch
+_workers = 2 if config.profile.has_cuda else max(1, min(config.profile.cpu_cores_logical // 2, 4))
+detectors = [ExamDetector() for _ in range(_workers)]
 identity_mgr = IdentityManager(os.path.join(proj_root, "examinees.json"), os.path.join(proj_root, "..", "applicants"))
 gaze_tracker = GazeTracker()
+gaze_lock = threading.Lock()          # ← protects gaze_tracker state across workers
 motion_analyzers = {}
+motion_analyzers_lock = threading.Lock()  # ← protects per-cam MotionAnalyzer creation
+
+# Cache of latest annotated frame per camera for the MJPEG encoder
+latest_annotated_frames = {}
+annotated_frames_lock = threading.Lock()
+
 vlm = VLMReporter()
 risk_engine = RiskEngine()
 
@@ -120,6 +131,13 @@ def detection_worker(worker_id):
                                 "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
                                 "confidence": det.get("confidence", 0),
                             })
+                            # Log intruder face in identity DB
+                            evidence.log_intruder(
+                                camera_id=cam_id,
+                                face_frame=crop,
+                                confidence=det.get("confidence", 0),
+                                notes=f"Unregistered person detected in exam hall (cam {cam_id})",
+                            )
                             evidence.log_incident(
                                 "INTRUDER",
                                 ["unauthorized person"],
@@ -129,23 +147,33 @@ def detection_worker(worker_id):
                                 clip_path=None,
                             )
 
-            # 3. Gaze / Head Pose
+            # 3. Gaze / Head Pose — use lock to protect shared gaze_tracker state
             gaze_anomaly = False
             movement_anomaly = False
             movement_score = 0.0
             if config.ENABLE_GAZE:
-                is_looking_away, duration = gaze_tracker.analyze_gaze(frame)
-                if is_looking_away and duration > 3.0:
-                    gaze_anomaly = True
-                    gaze_tracker.looking_away_start = None
+                with gaze_lock:
+                    is_looking_away, duration = gaze_tracker.analyze_gaze(frame)
+                    if is_looking_away and duration > 3.0:
+                        gaze_anomaly = True
+                        # Reset via lock — safe; previously this was written from router thread (race)
+                        gaze_tracker.looking_away_start = None
 
-            analyzer = motion_analyzers.setdefault(cam_id, MotionAnalyzer())
+            # MotionAnalyzer per camera — protect dict access with lock
+            with motion_analyzers_lock:
+                if cam_id not in motion_analyzers:
+                    motion_analyzers[cam_id] = MotionAnalyzer()
+                analyzer = motion_analyzers[cam_id]
             movement_anomaly, movement_score = analyzer.analyze(frame)
 
             # 4. Push detections into Risk Engine sliding window
             risk_engine.push(cam_id, detections, gaze_anomaly, movement_anomaly)
                     
-            # 5. Push to ResultQueue
+            # 5. Cache latest annotated frame for the MJPEG encoder
+            with annotated_frames_lock:
+                latest_annotated_frames[cam_id] = annotated_frame
+
+            # 6. Push to ResultQueue
             try:
                 result_queue.put_nowait({
                     "timestamp": timestamp,
@@ -174,14 +202,15 @@ def alert_router_loop():
     recording_active = {}
     last_detect_time = {}
     prev_manual_record = False
+    prev_auto_record = True       # track auto_record transitions
     last_incident_log = {}
-    
+
     while not shutdown_event.is_set():
         try:
             res = result_queue.get(timeout=0.1)
         except queue.Empty:
             continue
-            
+
         try:
             cam_id = res["cam_id"]
             frame = res["frame"]
@@ -190,43 +219,57 @@ def alert_router_loop():
             gaze_anomaly = res["gaze_anomaly"]
             movement_anomaly = res.get("movement_anomaly", False)
             movement_score = res.get("movement_score", 0.0)
-                
+
             # Detect Anomalies
             phone_detected = any(d['class'] == 'cell phone' for d in detections)
             anomaly_detected = phone_detected or gaze_anomaly or movement_anomaly
-            
+
             with state_lock:
                 auto_record_enabled = shared_state.get("auto_record", True)
                 manual_record_enabled = shared_state.get("manual_record", False)
-            
-            # Detect manual record toggle OFF → immediately close clips
+
+            # Auto-record turned OFF mid-clip → close all active clips immediately.
+            # Without this, clips kept recording for PRE_BUFFER_SECS after the toggle.
+            if prev_auto_record and not auto_record_enabled:
+                for cid in list(recording_active.keys()):
+                    if recording_active.get(cid):
+                        disk_writer.close_clip(cid)
+                        recording_active[cid] = None
+                        print(f"[ROUTER] Auto-record disabled — closed clip for cam {cid}")
+            prev_auto_record = auto_record_enabled
+
+            # Manual record toggled OFF → immediately close clips
             if prev_manual_record and not manual_record_enabled:
                 for cid in list(recording_active.keys()):
-                    if recording_active.get(cid, False):
+                    if recording_active.get(cid):
                         disk_writer.close_clip(cid)
-                        recording_active[cid] = False
+                        recording_active[cid] = None
+                        print(f"[ROUTER] Manual record stopped — closed clip for cam {cid}")
             prev_manual_record = manual_record_enabled
-            
+
             # Clip Recording logic
+            # IMPORTANT: only generate a new filename when STARTING a new clip — not every frame.
             clip_path_url = None
-            ts_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            codec_ext = "mp4" if config.CLIP_CODEC != "MJPG" else "avi"
-            fname = f"clip_{cam_id}_{ts_str}.{codec_ext}"
-            local_path = os.path.join(VIDEOS_DIR, fname)
-            
             should_record = (anomaly_detected and auto_record_enabled) or manual_record_enabled
-            
+
             if should_record:
                 last_detect_time[cam_id] = time.time()
-                if not recording_active.get(cam_id, False):
+                if not recording_active.get(cam_id):      # start new clip
+                    ts_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                    codec_ext = "mp4" if config.CLIP_CODEC != "MJPG" else "avi"
+                    fname = f"clip_{cam_id}_{ts_str}.{codec_ext}"
+                    local_path = os.path.join(VIDEOS_DIR, fname)
                     recording_active[cam_id] = local_path
             else:
-                if recording_active.get(cam_id, False):
+                # Only apply PRE_BUFFER_SECS cooldown when auto-record is still ON
+                # (anomaly just cleared). When auto-record is OFF this block is never
+                # reached because the toggle-OFF guard above already closed the clip.
+                if recording_active.get(cam_id):
                     if (time.time() - last_detect_time.get(cam_id, 0)) > config.PRE_BUFFER_SECS:
                         disk_writer.close_clip(cam_id)
-                        recording_active[cam_id] = False
-                        
-            is_recording = bool(recording_active.get(cam_id, False))
+                        recording_active[cam_id] = None
+
+            is_recording = bool(recording_active.get(cam_id))
             if is_recording:
                 disk_writer.enqueue_frame_for_clip(cam_id, annotated_frame, recording_active[cam_id])
                 clip_path_url = f"http://localhost:5000/videos/{os.path.basename(recording_active[cam_id])}"
@@ -284,8 +327,11 @@ def alert_router_loop():
                 shared_state["clip_path"] = clip_path_url
                 shared_state["frame_width"] = frame_w
                 shared_state["frame_height"] = frame_h
-                shared_state["auto_record"] = auto_record_enabled
-                shared_state["manual_record"] = manual_record_enabled
+                # NOTE: auto_record and manual_record are NOT written back here.
+                # They are user-controlled preferences owned exclusively by the
+                # /toggle-recording and /toggle-manual-record endpoints.
+                # Writing them back from the router loop caused a race condition
+                # where a user toggle mid-frame would be silently overwritten.
                 shared_state["alert_latency_ms"] = latency_ms
                 shared_state["risk_score"] = risk_info["score"]
                 shared_state["risk_sustained_secs"] = risk_info["sustained_secs"]
@@ -295,7 +341,12 @@ def alert_router_loop():
             # threshold AND minimum sustained duration checks.
             risk_cleared = risk_engine.should_alert(cam_id)
 
-            if anomaly_detected:
+            # ── Recording-gated: only write to archive if recording is enabled ──
+            # When auto-record is OFF and manual-record is OFF, anomalies are
+            # shown on the live feed but nothing is persisted to the incident DB.
+            recording_is_enabled = auto_record_enabled or manual_record_enabled
+
+            if anomaly_detected and recording_is_enabled:
                 severity = "HIGH" if phone_detected else "LOW"
                 event_type = "unauthorized_object" if phone_detected else "gaze_anomaly" if gaze_anomaly else "unusual_movement"
                 labels_for_event = [det["class"] for det in detections]
@@ -304,7 +355,7 @@ def alert_router_loop():
                 if movement_anomaly:
                     labels_for_event.append("unusual movement")
 
-                # Always log proctor events + anomaly scores for audit trail
+                # Log proctor events + anomaly scores for audit trail
                 evidence.log_proctor_event(
                     session_id=session_id,
                     camera_id=cam_id,
@@ -322,7 +373,7 @@ def alert_router_loop():
                     objects=1.0 if phone_detected else 0.0,
                 )
 
-                # Log every rate-limited anomaly to DB for the archive.
+                # Rate-limited incident log → Incident Archive.
                 # flagged=1 only when risk engine clears (confirmed high-confidence alert).
                 incident_key = (cam_id, event_type)
                 now = time.time()
@@ -354,6 +405,11 @@ def alert_router_loop():
                         "timestamp": shared_state["timestamp"],
                         "clip_path": clip_path_url,
                     })
+
+            elif anomaly_detected and not recording_is_enabled:
+                # Anomaly visible on live feed but not recorded — just update risk engine,
+                # no DB writes, no archive entries, no SocketIO alert persisted.
+                print(f"[ROUTER] Anomaly detected on cam {cam_id} — skipped (auto-record OFF)")
 
             # ── VLM reporting (throttled + risk-gated) ──
             if risk_cleared and anomaly_detected and (time.time() - last_vlm_call > max(config.profile.cpu_cores_logical, 5)):
@@ -408,28 +464,26 @@ def alert_router_loop():
 # ZERO-LATENCY MJPEG ENCODER
 # ──────────────────────────────────────────────
 def mjpeg_encoder_loop():
+    """Serve the latest ANNOTATED frame (with YOLO boxes already drawn by the detector).
+    Previously this read the raw camera frame and re-drew from shared_state detections,
+    which produced stale/mismatched overlays.  Now we use latest_annotated_frames which
+    is updated by each detection worker immediately after inference.
+    """
     print("[ENCODER] Zero-latency MJPEG stream started.")
     cam_id = config.CAMERA_SOURCES[0]
     fps_counter = 0
     fps_timer = time.time()
 
     while not shutdown_event.is_set():
-        frame = cam_stream.latest_frames.get(cam_id)
-        if frame is None:
+        # Prefer annotated (post-detection) frame; fall back to raw camera frame
+        with annotated_frames_lock:
+            draw_frame = latest_annotated_frames.get(cam_id)
+        if draw_frame is None:
+            draw_frame = cam_stream.latest_frames.get(cam_id)
+        if draw_frame is None:
             time.sleep(0.05)
             continue
-            
-        with state_lock:
-            detections = shared_state["detections"]
-            
-        draw_frame = frame.copy()
-        for d in detections:
-            x1, y1, x2, y2 = d["bbox"]
-            conf = d["confidence"]
-            label = d.get("class", "alert")
-            cv2.rectangle(draw_frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
-            cv2.putText(draw_frame, f"{label} {conf:.2f}", (x1, max(10, y1-10)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
-            
+
         _, buffer = cv2.imencode('.jpg', draw_frame, [cv2.IMWRITE_JPEG_QUALITY, config.SNAPSHOT_QUALITY])
         with frame_lock:
             global latest_jpeg
@@ -536,8 +590,16 @@ def manual_record():
 @app.route('/system-info')
 def system_info():
     import psutil
+    import torch as _torch
     cpu_percent = psutil.cpu_percent(interval=0)
     ram = psutil.virtual_memory()
+    # VRAM stats when CUDA is active
+    vram_total_mb = 0
+    vram_used_mb = 0
+    if config.profile.has_cuda and _torch.cuda.is_available():
+        vram_total_mb = int(_torch.cuda.get_device_properties(0).total_memory / 1e6)
+        vram_used_mb = int(_torch.cuda.memory_allocated(0) / 1e6)
+    infer_device = detectors[0].device if detectors else config.ACCELERATION_BACKEND
     return jsonify({
         "tier": config.profile.tier,
         "cpu_cores": config.profile.cpu_cores_physical,
@@ -548,9 +610,13 @@ def system_info():
         "ram_percent": ram.percent,
         "gpu": "CUDA" if config.profile.has_cuda else "MPS" if config.profile.has_mps else "None",
         "gpu_name": config.profile.gpu_name,
+        "vram_total_mb": vram_total_mb,
+        "vram_used_mb": vram_used_mb,
+        "inference_device": infer_device,
         "acceleration_backend": config.ACCELERATION_BACKEND,
         "onnx_providers": config.profile.onnx_providers,
         "yolo_conf": detectors[0].conf_thresh if detectors else 0.3,
+        "yolo_half": detectors[0].use_half if detectors else False,
         "detect_every_n": config.DETECT_EVERY_N,
         "detection_resolution": f"{config.DETECTION_RESOLUTION[0]}x{config.DETECTION_RESOLUTION[1]}",
         "clip_resolution": f"{config.CLIP_RESOLUTION[0]}x{config.CLIP_RESOLUTION[1]}",
@@ -559,7 +625,7 @@ def system_info():
         "gaze_enabled": config.ENABLE_GAZE,
         "frame_queue_size": frame_queue.size(),
         "frame_drop_rate": round(frame_queue.get_drop_rate() * 100, 1),
-        "num_workers": config.NUM_DETECTION_WORKERS,
+        "num_workers": len(detectors),
         "model_name": config.OBJECT_MODEL.replace(".pt", ""),
         "camera_caps": config.profile.camera_caps,
     })
@@ -789,16 +855,20 @@ def play_video(filename):
 
     def generate_frames():
         cap = cv2.VideoCapture(filepath)
-        fps = cap.get(cv2.CAP_PROP_FPS) or 20.0
-        delay = 1.0 / fps
-        while cap.isOpened():
-            ret, frame = cap.read()
-            if not ret:
-                break
-            _, jpeg = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
-            yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + jpeg.tobytes() + b"\r\n")
-            time.sleep(delay)
-        cap.release()
+        try:
+            fps = cap.get(cv2.CAP_PROP_FPS) or 20.0
+            delay = 1.0 / fps
+            while cap.isOpened():
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                _, jpeg = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + jpeg.tobytes() + b"\r\n")
+                time.sleep(delay)
+        except GeneratorExit:
+            pass  # Client disconnected — normal exit, release below
+        finally:
+            cap.release()  # Always release — previously leaked on client disconnect
 
     return Response(generate_frames(), mimetype="multipart/x-mixed-replace; boundary=frame")
 
@@ -813,6 +883,145 @@ def serve_video(filename):
     if not os.path.exists(filepath):
         return "Video not found", 404
     return send_from_directory(VIDEOS_DIR, filename, mimetype='video/mp4')
+
+@app.route('/enroll', methods=['POST'])
+def enroll_student():
+    """
+    Enroll an authorized person using their ID card / admit card photo.
+    Accepts multipart/form-data with:
+      - file: image file of the ID card (JPEG/PNG)
+      - roll_number: student roll number or ID string
+      - name: student name (optional)
+    Extracts the face from the ID card, saves the face image to the applicants
+    directory, and updates examinees.json. The identity manager reloads embeddings
+    in a background thread so the route returns immediately.
+    """
+    import json as _json
+
+    if 'file' not in request.files:
+        return jsonify({"success": False, "error": "No file uploaded"}), 400
+
+    roll_number = request.form.get('roll_number', '').strip()
+    name = request.form.get('name', roll_number).strip()
+    if not roll_number:
+        return jsonify({"success": False, "error": "roll_number is required"}), 400
+
+    import numpy as np
+    file = request.files['file']
+    file_bytes = file.read()
+    img_array = np.frombuffer(file_bytes, np.uint8)
+    id_card_img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+    if id_card_img is None:
+        return jsonify({"success": False, "error": "Could not decode image"}), 400
+
+    # Try to extract face from the ID card using DeepFace
+    face_img = id_card_img  # fallback: use full card image if face detection fails
+    deepface = __import__('identity').get_deepface()
+    if deepface is not None:
+        try:
+            faces = deepface.extract_faces(
+                img_path=id_card_img,
+                detector_backend='opencv',
+                enforce_detection=False
+            )
+            if faces and faces[0].get('confidence', 0) > 0.5:
+                facial_area = faces[0]['facial_area']
+                x, y, w, h = facial_area['x'], facial_area['y'], facial_area['w'], facial_area['h']
+                # Add 20% padding for better embedding quality
+                pad = int(max(w, h) * 0.2)
+                x1 = max(0, x - pad)
+                y1 = max(0, y - pad)
+                x2 = min(id_card_img.shape[1], x + w + pad)
+                y2 = min(id_card_img.shape[0], y + h + pad)
+                face_img = id_card_img[y1:y2, x1:x2]
+                print(f"[ENROLL] Face extracted from ID card for {roll_number} (conf={faces[0]['confidence']:.2f})")
+            else:
+                print(f"[ENROLL] No clear face found on ID card for {roll_number}, using full image")
+        except Exception as e:
+            print(f"[ENROLL] Face extraction failed for {roll_number}: {e}, using full card image")
+
+    # Save face image to applicants directory
+    applicants_dir = os.path.join(proj_root, "..", "applicants")
+    os.makedirs(applicants_dir, exist_ok=True)
+    face_path = os.path.join(applicants_dir, f"student_{roll_number}.jpg")
+    cv2.imwrite(face_path, face_img)
+
+    # Also save original ID card alongside
+    card_path = os.path.join(applicants_dir, f"idcard_{roll_number}.jpg")
+    cv2.imwrite(card_path, id_card_img)
+
+    # Update examinees.json
+    roster_path = os.path.join(proj_root, "examinees.json")
+    roster = []
+    if os.path.exists(roster_path):
+        try:
+            with open(roster_path, "r", encoding="utf-8") as f:
+                roster = _json.load(f)
+        except Exception:
+            roster = []
+
+    # Remove existing entry for this roll_number, then append updated one
+    roster = [s for s in roster if str(s.get("roll_number")) != str(roll_number)]
+    roster.append({"roll_number": roll_number, "name": name})
+    with open(roster_path, "w", encoding="utf-8") as f:
+        _json.dump(roster, f, indent=2)
+
+    # Reload identity embeddings in background
+    def _reload():
+        identity_mgr.loaded = False
+        identity_mgr.examinees_path = roster_path
+        identity_mgr._load_examinees()
+        print(f"[ENROLL] Embeddings reloaded: {len(identity_mgr.known_embeddings)} authorized identities")
+        socketio.emit("enrollment_complete", {
+            "roll_number": roll_number,
+            "name": name,
+            "total_enrolled": len(identity_mgr.known_embeddings)
+        })
+
+    threading.Thread(target=_reload, daemon=True, name="EnrollReload").start()
+
+    return jsonify({
+        "success": True,
+        "roll_number": roll_number,
+        "name": name,
+        "face_saved": face_path,
+        "message": f"Enrolled {name} ({roll_number}). Embeddings reloading in background."
+    })
+
+
+@app.route('/intruders')
+def get_intruders():
+    """Return all logged intruder detections from the identity DB."""
+    records = evidence.get_all_intruders()
+    for r in records:
+        r['timestamp_local'] = datetime.datetime.fromtimestamp(r['timestamp']).isoformat()
+    return jsonify(records)
+
+
+@app.route('/intruders/delete', methods=['POST'])
+def delete_intruder():
+    data = request.json or {}
+    ids = data.get('ids', [])
+    if ids:
+        with evidence.db_lock:
+            placeholders = ','.join('?' * len(ids))
+            evidence.conn.execute(f'DELETE FROM intruders WHERE id IN ({placeholders})', ids)
+            evidence.conn.commit()
+    return jsonify({'success': True, 'deleted': len(ids)})
+
+
+@app.route('/intruders/<int:intruder_id>/adjudicate', methods=['POST'])
+def adjudicate_intruder(intruder_id):
+    """Admin-only: confirm or clear an intruder flag.
+    Body: { "confirmed": true|false }
+    """
+    data = request.json or {}
+    confirmed = bool(data.get('confirmed', False))
+    evidence.adjudicate_intruder(intruder_id, confirmed)
+    status = 'CONFIRMED_INTRUDER' if confirmed else 'CLEARED'
+    print(f"[ADJUDICATE] Intruder #{intruder_id} → {status}")
+    return jsonify({'success': True, 'id': intruder_id, 'confirmed': confirmed, 'status': status})
+
 
 @app.route('/stream')
 def stream():

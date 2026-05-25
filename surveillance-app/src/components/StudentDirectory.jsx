@@ -1,12 +1,71 @@
-import { useState, useEffect } from 'react'
-import { Search, SlidersHorizontal, ChevronRight, Verified, BookOpen, Calendar, MapPin, Flag, Video } from 'lucide-react'
+import { useState, useEffect, useRef } from 'react'
+import { Search, SlidersHorizontal, ChevronRight, Verified, BookOpen, Calendar, MapPin, Flag, Video, Upload, AlertOctagon, UserX, CheckCircle, XCircle } from 'lucide-react'
 import { apiService } from '../services/api'
 
 export default function StudentDirectory() {
+  const [tab, setTab] = useState('registry') // 'registry' | 'enroll' | 'intruders'
   const [applicants, setApplicants] = useState([])
   const [searchTerm, setSearchTerm] = useState('')
   const [selectedPerson, setSelectedPerson] = useState(null)
   const [loading, setLoading] = useState(true)
+
+  // Enroll state
+  const [enrollFile, setEnrollFile] = useState(null)
+  const [enrollPreview, setEnrollPreview] = useState(null)
+  const [enrollRoll, setEnrollRoll] = useState('')
+  const [enrollName, setEnrollName] = useState('')
+  const [enrolling, setEnrolling] = useState(false)
+  const [enrollMsg, setEnrollMsg] = useState(null) // {ok, text}
+  const fileInputRef = useRef(null)
+
+  // Intruders state
+  const [intruders, setIntruders] = useState([])
+  const [intrudersLoading, setIntrudersLoading] = useState(false)
+
+  const fetchIntruders = async () => {
+    setIntrudersLoading(true)
+    try {
+      const res = await fetch('http://localhost:5000/intruders')
+      const data = await res.json()
+      setIntruders(data)
+    } catch { setIntruders([]) }
+    finally { setIntrudersLoading(false) }
+  }
+
+  useEffect(() => {
+    if (tab === 'intruders') fetchIntruders()
+  }, [tab])
+
+  const handleFileChange = (e) => {
+    const f = e.target.files[0]
+    if (!f) return
+    setEnrollFile(f)
+    setEnrollPreview(URL.createObjectURL(f))
+    setEnrollMsg(null)
+  }
+
+  const handleEnroll = async (e) => {
+    e.preventDefault()
+    if (!enrollFile || !enrollRoll.trim()) return
+    setEnrolling(true)
+    setEnrollMsg(null)
+    try {
+      const fd = new FormData()
+      fd.append('file', enrollFile)
+      fd.append('roll_number', enrollRoll.trim())
+      fd.append('name', enrollName.trim() || enrollRoll.trim())
+      const res = await fetch('http://localhost:5000/enroll', { method: 'POST', body: fd })
+      const data = await res.json()
+      if (data.success) {
+        setEnrollMsg({ ok: true, text: data.message })
+        setEnrollFile(null); setEnrollPreview(null); setEnrollRoll(''); setEnrollName('')
+      } else {
+        setEnrollMsg({ ok: false, text: data.error || 'Enrollment failed' })
+      }
+    } catch (err) {
+      setEnrollMsg({ ok: false, text: 'Network error — backend offline?' })
+    } finally { setEnrolling(false) }
+  }
 
   useEffect(() => {
     const fetchApplicants = async () => {
@@ -14,16 +73,10 @@ export default function StudentDirectory() {
       try {
         const data = await apiService.getApplicantsInfo()
         setApplicants(data.applicants || [])
-        if (data.applicants?.length > 0) {
-          setSelectedPerson(data.applicants[0])
-        }
-      } catch (err) {
-        console.error("Failed to load applicants", err)
-      } finally {
-        setLoading(false)
-      }
+        if (data.applicants?.length > 0) setSelectedPerson(data.applicants[0])
+      } catch (err) { console.error('Failed to load applicants', err) }
+      finally { setLoading(false) }
     }
-
     fetchApplicants()
   }, [])
 
@@ -35,7 +88,167 @@ export default function StudentDirectory() {
   })
 
   return (
-    <div className="flex-1 flex flex-col lg:flex-row overflow-hidden gap-6 h-full min-h-0 @container">
+    <div className="flex-1 flex flex-col min-h-0 @container">
+
+      {/* Tab Bar */}
+      <div className="flex gap-1 mb-4 shrink-0 bg-surface-container-low rounded-xl p-1 border border-outline-variant/20">
+        {[
+          { key: 'registry', label: 'Candidate Registry' },
+          { key: 'enroll',   label: 'Enroll via ID Card' },
+          { key: 'intruders', label: 'Intruder Log' },
+        ].map(t => (
+          <button key={t.key} onClick={() => setTab(t.key)}
+            className={`flex-1 py-2 rounded-lg font-mono text-xs uppercase tracking-widest transition-all ${
+              tab === t.key
+                ? 'bg-primary text-on-primary shadow-[0_0_10px_rgba(173,198,255,0.2)]'
+                : 'text-on-surface-variant hover:text-on-surface hover:bg-surface-container'
+            }`}>{t.label}
+          </button>
+        ))}
+      </div>
+
+      {/* ── ENROLL TAB ── */}
+      {tab === 'enroll' && (
+        <div className="flex-1 flex flex-col lg:flex-row gap-6 overflow-y-auto min-h-0">
+          <form onSubmit={handleEnroll} className="flex-1 bg-surface-container border border-outline-variant/30 rounded-xl p-6 flex flex-col gap-5">
+            <div>
+              <h2 className="text-xl font-bold text-on-surface mb-1">Enroll Authorized Person</h2>
+              <p className="text-xs font-mono text-on-surface-variant">Upload admit card or ID photo. The system extracts the face and adds it to the authorized identity database.</p>
+            </div>
+
+            {/* ID Card Upload */}
+            <div
+              onClick={() => fileInputRef.current?.click()}
+              className="border-2 border-dashed border-outline-variant/60 rounded-xl p-6 flex flex-col items-center justify-center gap-3 cursor-pointer hover:border-primary/60 hover:bg-primary/5 transition-all min-h-[180px]"
+            >
+              {enrollPreview ? (
+                <img src={enrollPreview} alt="ID Card Preview" className="max-h-40 rounded-lg object-contain border border-outline-variant/30" />
+              ) : (
+                <>
+                  <Upload size={36} className="text-on-surface-variant opacity-50" />
+                  <p className="font-mono text-xs text-on-surface-variant text-center">Click to upload ID Card / Admit Card<br/><span className="text-[10px] opacity-60">JPEG, PNG supported</span></p>
+                </>
+              )}
+              <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={handleFileChange} />
+            </div>
+
+            {/* Roll Number */}
+            <div>
+              <label className="block font-mono text-[11px] text-on-surface-variant uppercase tracking-wider mb-1">Roll Number / ID *</label>
+              <input
+                type="text" value={enrollRoll} onChange={e => setEnrollRoll(e.target.value)} required
+                placeholder="e.g. 2024CS001"
+                className="w-full bg-surface-container-low border border-outline-variant/60 rounded-lg px-4 py-2 font-mono text-sm text-on-surface placeholder:text-on-surface-variant/40 focus:outline-none focus:border-primary transition-colors"
+              />
+            </div>
+
+            {/* Name */}
+            <div>
+              <label className="block font-mono text-[11px] text-on-surface-variant uppercase tracking-wider mb-1">Full Name (optional)</label>
+              <input
+                type="text" value={enrollName} onChange={e => setEnrollName(e.target.value)}
+                placeholder="e.g. Arjun Sharma"
+                className="w-full bg-surface-container-low border border-outline-variant/60 rounded-lg px-4 py-2 font-mono text-sm text-on-surface placeholder:text-on-surface-variant/40 focus:outline-none focus:border-primary transition-colors"
+              />
+            </div>
+
+            {/* Feedback */}
+            {enrollMsg && (
+              <div className={`flex items-center gap-2 px-4 py-3 rounded-lg border text-sm font-mono ${
+                enrollMsg.ok
+                  ? 'bg-emerald-900/20 border-emerald-500/40 text-emerald-400'
+                  : 'bg-red-900/20 border-red-500/40 text-red-400'
+              }`}>
+                {enrollMsg.ok ? <CheckCircle size={16}/> : <XCircle size={16}/>}
+                {enrollMsg.text}
+              </div>
+            )}
+
+            <button type="submit" disabled={enrolling || !enrollFile || !enrollRoll.trim()}
+              className="w-full py-3 bg-primary text-on-primary font-mono text-sm rounded-lg hover:bg-primary-fixed transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+            >
+              {enrolling ? (
+                <><svg className="animate-spin" width="18" height="18" viewBox="0 0 24 24" fill="none"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/></svg>Enrolling...</>
+              ) : (
+                <><Upload size={16}/>Enroll &amp; Save to Identity DB</>
+              )}
+            </button>
+          </form>
+
+          {/* Info Panel */}
+          <div className="w-full lg:w-72 flex flex-col gap-4 shrink-0">
+            <div className="bg-surface-container border border-outline-variant/30 rounded-xl p-5 flex flex-col gap-3">
+              <h3 className="font-mono text-xs text-on-surface-variant uppercase tracking-widest">How It Works</h3>
+              <div className="flex flex-col gap-3 text-xs text-on-surface-variant font-mono">
+                {[
+                  ['1', 'Upload admit card or photo ID with a visible face'],
+                  ['2', 'System auto-extracts the face using DeepFace'],
+                  ['3', 'Face embedding saved to authorized identity DB'],
+                  ['4', 'Live feed now marks this person as AUTHORIZED'],
+                  ['5', 'Anyone not in DB → flagged as INTRUDER'],
+                ].map(([n, t]) => (
+                  <div key={n} className="flex gap-3">
+                    <span className="w-5 h-5 rounded-full bg-primary/20 text-primary flex items-center justify-center text-[10px] shrink-0">{n}</span>
+                    <span>{t}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="bg-amber-900/10 border border-amber-500/30 rounded-xl p-4">
+              <p className="font-mono text-[11px] text-amber-400"><strong>Note:</strong> A session must be active (Admin Panel → Start Session) for intruder detection to run.</p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── INTRUDERS TAB ── */}
+      {tab === 'intruders' && (
+        <div className="flex-1 flex flex-col min-h-0">
+          <div className="flex justify-between items-center mb-4 shrink-0">
+            <div>
+              <h2 className="text-xl font-bold text-on-surface">Intruder Log</h2>
+              <p className="font-mono text-[12px] text-on-surface-variant mt-0.5">Unauthorized persons detected and stored in Identity DB</p>
+            </div>
+            <button onClick={fetchIntruders} className="font-mono text-xs px-3 py-1.5 rounded border border-outline-variant text-on-surface-variant hover:bg-surface-container-high transition-colors">Refresh</button>
+          </div>
+          <div className="flex-1 overflow-y-auto min-h-0">
+            {intrudersLoading ? (
+              <div className="flex items-center justify-center h-32 text-on-surface-variant font-mono text-sm">Loading...</div>
+            ) : intruders.length === 0 ? (
+              <div className="flex flex-col items-center justify-center h-48 gap-3 text-on-surface-variant">
+                <UserX size={40} className="opacity-30"/>
+                <p className="font-mono text-sm">No intruders logged yet</p>
+                <p className="font-mono text-[11px] opacity-50">Detections appear here when unauthorized persons are found</p>
+              </div>
+            ) : (
+              <div className="flex flex-col gap-2">
+                {intruders.map(r => (
+                  <div key={r.id} className="bg-surface-container border border-red-900/30 rounded-lg p-4 flex items-center gap-4">
+                    <div className="w-10 h-10 rounded-full bg-red-900/30 border border-red-500/40 flex items-center justify-center shrink-0">
+                      <AlertOctagon size={18} className="text-red-400"/>
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="font-mono text-xs font-bold text-red-400 uppercase tracking-wide">UNAUTHORIZED PERSON</p>
+                      <p className="font-mono text-[11px] text-on-surface-variant mt-0.5">
+                        Camera {r.camera_id} &nbsp;•&nbsp;
+                        {new Date(r.timestamp * 1000).toLocaleString(undefined, { hour12: false })}
+                      </p>
+                      {r.notes && <p className="font-mono text-[10px] text-on-surface-variant/60 mt-0.5 truncate">{r.notes}</p>}
+                    </div>
+                    <div className="shrink-0 font-mono text-xs text-on-surface-variant">
+                      Conf: {r.confidence ? (r.confidence * 100).toFixed(0) : '—'}%
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ── REGISTRY TAB ── */}
+      {tab === 'registry' && (
+        <div className="flex-1 flex flex-col lg:flex-row overflow-hidden gap-6 h-full min-h-0">
       
       {/* Left Pane: Registry List */}
       <section className="flex-1 flex flex-col min-w-0 bg-surface-container-lowest rounded-xl border border-outline-variant/20 overflow-hidden shadow-lg min-h-0">
@@ -222,6 +435,8 @@ export default function StudentDirectory() {
           </div>
         )}
       </aside>
+        </div>
+      )}
     </div>
   )
 }

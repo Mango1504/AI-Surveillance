@@ -93,6 +93,22 @@ class EvidenceCache:
                 aggregate_score REAL
             )
         """)
+        # Identity DB — stores unauthorized persons detected during sessions
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS intruders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp REAL NOT NULL,
+                camera_id TEXT,
+                face_blob BLOB,
+                confidence REAL,
+                id_card_match TEXT,
+                notes TEXT,
+                adjudicated INTEGER DEFAULT 0,
+                confirmed_intruder INTEGER DEFAULT NULL
+            )
+        """)
+        self._ensure_column(cursor, "intruders", "adjudicated", "INTEGER")
+        self._ensure_column(cursor, "intruders", "confirmed_intruder", "INTEGER")
         self._ensure_column(cursor, "incidents", "clip_path", "TEXT")
         self.conn.commit()
 
@@ -165,6 +181,39 @@ class EvidenceCache:
         payload = (session_id, time.time(), candidate_id, movement, gaze, objects, aggregate)
         self.write_queue.put(("anomaly_score", payload))
 
+    def log_intruder(self, camera_id, face_frame, confidence=0.0, notes=""):
+        """Store an unauthorized person's face crop in the identity DB."""
+        raw_bytes = self._frame_bytes(face_frame)
+        encrypted_blob = self.cipher.encrypt(raw_bytes) if raw_bytes else b""
+        payload = (time.time(), str(camera_id), encrypted_blob, confidence, None, notes)
+        self.write_queue.put(("intruder", payload))
+
+    def get_all_intruders(self, limit=100):
+        """Return stored intruder records (without decrypting face blobs)."""
+        with self.db_lock:
+            cursor = self.conn.cursor()
+            cursor.execute("""
+                SELECT id, timestamp, camera_id, confidence, id_card_match, notes, adjudicated, confirmed_intruder
+                FROM intruders
+                ORDER BY timestamp DESC
+                LIMIT ?
+            """, (limit,))
+            return [
+                {"id": r[0], "timestamp": r[1], "camera_id": r[2],
+                 "confidence": r[3], "id_card_match": r[4], "notes": r[5],
+                 "adjudicated": bool(r[6]), "confirmed_intruder": r[7]}
+                for r in cursor.fetchall()
+            ]
+
+    def adjudicate_intruder(self, intruder_id, confirmed: bool):
+        """Admin decision: mark intruder as confirmed (True) or cleared (False)."""
+        with self.db_lock:
+            self.conn.execute(
+                "UPDATE intruders SET adjudicated=1, confirmed_intruder=? WHERE id=?",
+                (1 if confirmed else 0, intruder_id)
+            )
+            self.conn.commit()
+
     def _writer_loop(self):
         while self.running or not self.write_queue.empty():
             try:
@@ -191,6 +240,11 @@ class EvidenceCache:
                             INSERT INTO proctor_anomaly_scores (
                                 session_id, timestamp, candidate_id, movement_score, gaze_score, object_score, aggregate_score
                             ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """, payload)
+                    elif kind == "intruder":
+                        cursor.execute("""
+                            INSERT INTO intruders (timestamp, camera_id, face_blob, confidence, id_card_match, notes)
+                            VALUES (?, ?, ?, ?, ?, ?)
                         """, payload)
                     self.conn.commit()
             except Exception as e:
@@ -235,9 +289,11 @@ class EvidenceCache:
         # Try to parse timestamp from filename: clip_0_YYYYMMDD_HHMMSS.mp4
         m = re.search(r'(\d{8})_(\d{6})', filename)
         if m:
+            import calendar
             from datetime import datetime
             try:
-                ts = datetime.strptime(m.group(1) + m.group(2), '%Y%m%d%H%M%S').timestamp()
+                dt = datetime.strptime(m.group(1) + m.group(2), '%Y%m%d%H%M%S')
+                ts = calendar.timegm(dt.timetuple())  # treat as local → UTC epoch
             except Exception:
                 pass
         payload = (ts, 'Unknown', filename, 'Recorded clip', None, 0, filepath_url)

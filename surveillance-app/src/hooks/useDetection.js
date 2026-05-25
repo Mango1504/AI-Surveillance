@@ -1,16 +1,21 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import { apiService } from '../services/api'
 
-export const useDetectionStatus = (examHall = 1, pollInterval = 800) => {
+export const useDetectionStatus = (examHall = 1, pollInterval = 1000) => {
   const [status, setStatus] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
+  const inFlightRef = useRef(false)   // prevent overlapping requests
 
   useEffect(() => {
     let isMounted = true
     let intervalId
 
     const fetchStatus = async () => {
+      // Skip if a previous request is still in flight — prevents request stacking
+      // under load (was causing flickering "OFFLINE" state and stale detections)
+      if (inFlightRef.current) return
+      inFlightRef.current = true
       try {
         setLoading(true)
         const data = await apiService.getStatus(examHall)
@@ -19,10 +24,11 @@ export const useDetectionStatus = (examHall = 1, pollInterval = 800) => {
           setError(null)
         }
       } catch (err) {
-        if (isMounted) {
+        if (isMounted && err.name !== 'AbortError') {
           setError(err.message)
         }
       } finally {
+        inFlightRef.current = false
         if (isMounted) {
           setLoading(false)
         }

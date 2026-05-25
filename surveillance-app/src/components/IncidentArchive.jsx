@@ -1,17 +1,32 @@
-import { useState, useEffect, useCallback } from 'react'
-import { Filter, Calendar, Play, X, VideoOff, History, Trash2, CheckSquare, Square, ScanLine } from 'lucide-react'
+import { useState, useEffect } from 'react'
+import { Filter, Play, X, VideoOff, History, Trash2, CheckSquare, Square, ScanLine, ArrowLeft, Search, AlertTriangle, Eye, Smartphone, Activity, User } from 'lucide-react'
 import { apiService } from '../services/api'
 
-// Derive thumbnail and playback URLs from the stored clip_path
-function getThumbnailUrl(videoPath) {
+// Extract just the filename from any backend video URL and build correct endpoint URL
+const BACKEND = 'http://localhost:5000'
+
+function getFilename(videoPath) {
   if (!videoPath) return null
-  return videoPath.replace('/videos/', '/videos/thumbnail/')
+  // Handle full URLs like http://localhost:5000/videos/clip_0_20260516_010000.mp4
+  // or relative paths like /videos/clip_... or just a bare filename
+  try {
+    const url = new URL(videoPath, BACKEND)
+    return url.pathname.split('/').filter(Boolean).pop()
+  } catch {
+    return videoPath.split('/').pop()
+  }
+}
+
+function getThumbnailUrl(videoPath) {
+  const fname = getFilename(videoPath)
+  return fname ? `${BACKEND}/videos/thumbnail/${fname}` : null
 }
 
 function getPlaybackUrl(videoPath) {
-  if (!videoPath) return null
-  return videoPath.replace('/videos/', '/videos/play/')
+  const fname = getFilename(videoPath)
+  return fname ? `${BACKEND}/videos/play/${fname}` : null
 }
+
 
 export default function IncidentArchive() {
   const [records, setRecords] = useState([])
@@ -23,6 +38,78 @@ export default function IncidentArchive() {
   const [brokenThumbs, setBrokenThumbs] = useState(new Set())
   const [scanning, setScanning] = useState(false)
   const [scanMsg, setScanMsg] = useState('')
+
+  // ── Filter state ──
+  const [activeFilters, setActiveFilters] = useState(new Set(['all']))
+  const [activeSeverity, setActiveSeverity] = useState('all')  // 'all' | 'BREACH' | 'WARNING'
+  const [searchQuery, setSearchQuery] = useState('')
+  const [showFilters, setShowFilters] = useState(false)
+
+  // Anomaly type filter definitions
+  const FILTER_TYPES = [
+    { key: 'all',      label: 'All',       icon: Filter,        color: 'text-on-surface-variant',  activeColor: 'bg-primary/20 border-primary/60 text-primary' },
+    { key: 'phone',    label: 'Phone',     icon: Smartphone,    color: 'text-on-surface-variant',  activeColor: 'bg-error/20 border-error/60 text-error' },
+    { key: 'gaze',     label: 'Gaze',      icon: Eye,           color: 'text-on-surface-variant',  activeColor: 'bg-amber-500/20 border-amber-500/60 text-amber-400' },
+    { key: 'movement', label: 'Movement',  icon: Activity,      color: 'text-on-surface-variant',  activeColor: 'bg-violet-500/20 border-violet-500/60 text-violet-400' },
+    { key: 'person',   label: 'Person',    icon: User,          color: 'text-on-surface-variant',  activeColor: 'bg-sky-500/20 border-sky-500/60 text-sky-400' },
+    { key: 'other',    label: 'Other',     icon: AlertTriangle, color: 'text-on-surface-variant',  activeColor: 'bg-surface-container-highest border-outline text-on-surface' },
+  ]
+
+  const toggleFilter = (key) => {
+    if (key === 'all') {
+      setActiveFilters(new Set(['all']))
+      return
+    }
+    setActiveFilters(prev => {
+      const next = new Set(prev)
+      next.delete('all')
+      if (next.has(key)) {
+        next.delete(key)
+        if (next.size === 0) next.add('all')  // revert to All when none selected
+      } else {
+        next.add(key)
+      }
+      return next
+    })
+  }
+
+  // Classify a record's alertType string into our filter keys
+  const classifyRecord = (record) => {
+    const t = (record.alertType || '').toLowerCase()
+    const r = (record.report || '').toLowerCase()
+    const combined = t + ' ' + r
+    if (combined.includes('cell phone') || combined.includes('phone')) return 'phone'
+    if (combined.includes('gaze') || combined.includes('head pose')) return 'gaze'
+    if (combined.includes('unusual movement') || combined.includes('movement')) return 'movement'
+    if (combined.includes('person') || combined.includes('intruder')) return 'person'
+    return 'other'
+  }
+
+  // Derive filtered records from all filters
+  const filteredRecords = records.filter(record => {
+    // Anomaly type filter
+    if (!activeFilters.has('all')) {
+      const cls = classifyRecord(record)
+      if (!activeFilters.has(cls)) return false
+    }
+    // Severity filter
+    if (activeSeverity !== 'all' && record.severity !== activeSeverity) return false
+    // Text search
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase()
+      const haystack = `${record.alertType} ${record.report} ${record.candidateId}`.toLowerCase()
+      if (!haystack.includes(q)) return false
+    }
+    return true
+  })
+
+  const hasActiveFilters = !activeFilters.has('all') || activeSeverity !== 'all' || searchQuery.trim()
+
+  const clearAllFilters = () => {
+    setActiveFilters(new Set(['all']))
+    setActiveSeverity('all')
+    setSearchQuery('')
+  }
 
   const fetchRecords = async () => {
     try {
@@ -74,10 +161,10 @@ export default function IncidentArchive() {
   }, [])
 
   const handleSelectAll = () => {
-    if (selectedIds.size === records.length && records.length > 0) {
+    if (selectedIds.size === filteredRecords.length && filteredRecords.length > 0) {
       setSelectedIds(new Set())
     } else {
-      setSelectedIds(new Set(records.map(r => r.id)))
+      setSelectedIds(new Set(filteredRecords.map(r => r.id)))
     }
   }
 
@@ -115,10 +202,15 @@ export default function IncidentArchive() {
   return (
     <div className="flex-1 flex flex-col min-h-0 @container">
       {/* Page Header */}
-      <div className="mb-6 flex flex-col md:flex-row justify-between items-start md:items-end gap-4 shrink-0">
+      <div className="mb-4 flex flex-col md:flex-row justify-between items-start md:items-end gap-4 shrink-0">
         <div>
           <h2 className="text-3xl font-bold text-on-surface tracking-tight">Incident Archive</h2>
-          <p className="font-mono text-[13px] text-on-surface-variant mt-1">Total Records: {records.length} | Displaying: Last 24 Hours</p>
+          <p className="font-mono text-[13px] text-on-surface-variant mt-1">
+            {hasActiveFilters
+              ? `Showing ${filteredRecords.length} of ${records.length} records`
+              : `Total Records: ${records.length}`
+            }
+          </p>
         </div>
         <div className="flex flex-wrap gap-2">
           {scanMsg && <span className={`font-mono text-xs self-center ${scanMsg.includes('✓') ? 'text-emerald-400' : 'text-error'}`}>{scanMsg}</span>}
@@ -133,7 +225,7 @@ export default function IncidentArchive() {
           {selectionMode ? (
             <>
               {selectedIds.size > 0 && (
-                <button 
+                <button
                   onClick={handleDeleteSelected}
                   disabled={deleting}
                   className="bg-error/20 text-error font-body-md px-4 py-2 border border-error/50 rounded hover:bg-error/30 transition-colors flex items-center gap-2 disabled:opacity-50"
@@ -143,7 +235,7 @@ export default function IncidentArchive() {
                 </button>
               )}
               <button onClick={handleSelectAll} className="bg-surface-container text-on-surface font-body-md px-4 py-2 border border-outline-variant rounded hover:bg-surface-container-high transition-colors flex items-center gap-2">
-                {selectedIds.size === records.length && records.length > 0 ? <CheckSquare size={16} /> : <Square size={16} />} 
+                {selectedIds.size === filteredRecords.length && filteredRecords.length > 0 ? <CheckSquare size={16} /> : <Square size={16} />}
                 Select All
               </button>
               <button onClick={() => { setSelectionMode(false); setSelectedIds(new Set()) }} className="bg-surface-container text-on-surface font-body-md px-4 py-2 border border-outline-variant rounded hover:bg-surface-container-high transition-colors flex items-center gap-2">
@@ -155,14 +247,104 @@ export default function IncidentArchive() {
               <CheckSquare size={16} /> Select
             </button>
           )}
-          <button className="bg-surface-container text-on-surface font-body-md px-4 py-2 border border-outline-variant rounded hover:bg-surface-container-high transition-colors flex items-center gap-2">
-            <Filter size={16} /> Filter
-          </button>
-          <button className="bg-surface-container text-on-surface font-body-md px-4 py-2 border border-outline-variant rounded hover:bg-surface-container-high transition-colors flex items-center gap-2">
-            <Calendar size={16} /> Date Range
+          {/* Filter toggle button — highlighted when filters are active */}
+          <button
+            onClick={() => setShowFilters(f => !f)}
+            className={`font-body-md px-4 py-2 border rounded transition-colors flex items-center gap-2 ${
+              hasActiveFilters
+                ? 'bg-primary/10 border-primary/40 text-primary hover:bg-primary/20'
+                : 'bg-surface-container border-outline-variant text-on-surface hover:bg-surface-container-high'
+            }`}
+          >
+            <Filter size={16} />
+            Filter
+            {hasActiveFilters && (
+              <span className="bg-primary text-on-primary font-mono text-[10px] px-1.5 py-0.5 rounded-full leading-none">
+                {(activeFilters.has('all') ? 0 : activeFilters.size) + (activeSeverity !== 'all' ? 1 : 0) + (searchQuery.trim() ? 1 : 0)}
+              </span>
+            )}
           </button>
         </div>
       </div>
+
+      {/* ── Filter Panel ── */}
+      {showFilters && (
+        <div className="mb-4 shrink-0 bg-surface-container border border-outline-variant/40 rounded-xl p-4 flex flex-col gap-4">
+
+          {/* Search */}
+          <div className="relative">
+            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-on-surface-variant" />
+            <input
+              type="text"
+              placeholder="Search by label, report text, or candidate ID…"
+              value={searchQuery}
+              onChange={e => setSearchQuery(e.target.value)}
+              className="w-full bg-surface-container-low border border-outline-variant/60 rounded-lg pl-8 pr-4 py-2 font-mono text-xs text-on-surface placeholder:text-on-surface-variant/50 focus:outline-none focus:border-primary/60 transition-colors"
+            />
+            {searchQuery && (
+              <button onClick={() => setSearchQuery('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-on-surface-variant hover:text-on-surface">
+                <X size={14} />
+              </button>
+            )}
+          </div>
+
+          {/* Anomaly type pills */}
+          <div>
+            <p className="font-mono text-[10px] text-on-surface-variant uppercase tracking-widest mb-2">Anomaly Type</p>
+            <div className="flex flex-wrap gap-2">
+              {FILTER_TYPES.map(({ key, label, icon: Icon, activeColor }) => {
+                const isActive = activeFilters.has(key)
+                return (
+                  <button
+                    key={key}
+                    onClick={() => toggleFilter(key)}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full border font-mono text-xs transition-all ${
+                      isActive
+                        ? activeColor
+                        : 'bg-surface-container-low border-outline-variant/40 text-on-surface-variant hover:border-outline-variant hover:text-on-surface'
+                    }`}
+                  >
+                    <Icon size={12} />
+                    {label}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+
+          {/* Severity row */}
+          <div>
+            <p className="font-mono text-[10px] text-on-surface-variant uppercase tracking-widest mb-2">Severity</p>
+            <div className="flex gap-2">
+              {[['all', 'All Severities', ''], ['BREACH', 'Breach', 'text-error border-error/40 bg-error/10'], ['WARNING', 'Warning', 'text-amber-400 border-amber-500/40 bg-amber-500/10']].map(([val, lbl, cls]) => (
+                <button
+                  key={val}
+                  onClick={() => setActiveSeverity(val)}
+                  className={`px-3 py-1.5 rounded-full border font-mono text-xs transition-all ${
+                    activeSeverity === val
+                      ? val === 'all'
+                        ? 'bg-primary/20 border-primary/60 text-primary'
+                        : cls
+                      : 'bg-surface-container-low border-outline-variant/40 text-on-surface-variant hover:border-outline-variant'
+                  }`}
+                >
+                  {lbl}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Clear all */}
+          {hasActiveFilters && (
+            <button
+              onClick={clearAllFilters}
+              className="self-start flex items-center gap-1.5 font-mono text-xs text-on-surface-variant hover:text-error transition-colors"
+            >
+              <X size={12} /> Clear all filters
+            </button>
+          )}
+        </div>
+      )}
 
       {/* Grid */}
       <div className="flex-1 overflow-y-auto min-h-0">
@@ -171,14 +353,21 @@ export default function IncidentArchive() {
             <div className="loading-spinner mr-3"></div>
             Syncing archive...
           </div>
-        ) : records.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-full text-on-surface-variant">
-            <History size={48} className="opacity-50 mb-4" />
-            <p className="font-mono text-sm">No incident records found in the database.</p>
+        ) : filteredRecords.length === 0 ? (
+          <div className="flex flex-col items-center justify-center h-full text-on-surface-variant gap-3">
+            <History size={48} className="opacity-50" />
+            <p className="font-mono text-sm">
+              {hasActiveFilters ? 'No records match the active filters.' : 'No incident records found in the database.'}
+            </p>
+            {hasActiveFilters && (
+              <button onClick={clearAllFilters} className="font-mono text-xs text-primary hover:underline flex items-center gap-1">
+                <X size={12} /> Clear filters
+              </button>
+            )}
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6 pb-6">
-            {records.map((record) => {
+            {filteredRecords.map((record) => {
               const isBreach = record.severity === 'BREACH'
               return (
                 <article
@@ -247,7 +436,11 @@ export default function IncidentArchive() {
                   <div className="p-4 flex-grow flex flex-col gap-2">
                     <div className="flex justify-between items-start">
                       <div className="font-mono text-[13px] text-on-surface-variant tracking-wider">
-                        {new Date(record.timestamp).toISOString().replace('T', ' ').substring(0, 19)} UTC
+                        {new Date(record.timestamp).toLocaleString(undefined, {
+                          year: 'numeric', month: '2-digit', day: '2-digit',
+                          hour: '2-digit', minute: '2-digit', second: '2-digit',
+                          hour12: false
+                        })}
                       </div>
                       <span className={`font-mono text-[13px] ${isBreach ? 'text-error bg-error/10' : 'text-yellow-500 bg-yellow-500/10'} px-1.5 rounded font-bold`}>
                         CONF: {(record.confidence * 100).toFixed(0)}%
@@ -276,8 +469,17 @@ export default function IncidentArchive() {
 
       {/* Video Modal */}
       {videoModal && (
-        <div className="fixed inset-0 bg-black/90 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
-          <div className="bg-surface-container border border-outline-variant/50 rounded-xl max-w-5xl w-full overflow-hidden shadow-2xl flex flex-col">
+        // Clicking the dark backdrop also closes the modal
+        <div
+          className="fixed inset-0 bg-black/90 backdrop-blur-sm z-[100] flex items-center justify-center p-4"
+          onClick={() => setVideoModal(null)}
+        >
+          {/* Stop propagation so clicks inside the card don't close it */}
+          <div
+            className="bg-surface-container border border-outline-variant/50 rounded-xl max-w-5xl w-full overflow-hidden shadow-2xl flex flex-col"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Header */}
             <div className="flex justify-between items-center p-4 border-b border-outline-variant/30 bg-surface-container-low">
               <div>
                 <h3 className="text-lg font-bold text-on-surface flex items-center gap-2">
@@ -285,26 +487,30 @@ export default function IncidentArchive() {
                   {videoModal.severity} EVENT PLAYBACK
                 </h3>
                 <p className="text-[11px] font-mono text-on-surface-variant tracking-wider mt-1">
-                  ID: {videoModal.candidateId} • {new Date(videoModal.timestamp).toISOString().replace('T', ' ').substring(0, 19)} UTC
+                  ID: {videoModal.candidateId} • {new Date(videoModal.timestamp).toLocaleString(undefined, {
+                    year: 'numeric', month: '2-digit', day: '2-digit',
+                    hour: '2-digit', minute: '2-digit', second: '2-digit',
+                    hour12: false
+                  })}
                 </p>
               </div>
+              {/* Icon-only close button in header */}
               <button
                 onClick={() => setVideoModal(null)}
                 className="p-2 hover:bg-surface-container-high rounded text-on-surface-variant hover:text-on-surface transition-colors"
+                title="Close"
               >
                 <X size={24} />
               </button>
             </div>
-            
+
+            {/* Video */}
             <div className="bg-black aspect-video flex items-center justify-center overflow-hidden relative">
               {videoModal.videoPath ? (
                 /* Backend re-encodes mp4v as MJPEG — plays natively in all browsers via <img> */
                 <img
                   key={videoModal.videoPath}
-                  src={videoModal.videoPath.replace(
-                    /\/videos\//,
-                    '/videos/play/'
-                  ).replace('http://localhost:5000', 'http://localhost:5000')}
+                  src={getPlaybackUrl(videoModal.videoPath)}
                   alt="Incident playback"
                   className="w-full h-full object-contain"
                 />
@@ -319,10 +525,21 @@ export default function IncidentArchive() {
                 ARCHIVE PLAYBACK
               </div>
             </div>
-            
+
+            {/* VLM log + footer close button */}
             <div className="p-6 bg-surface-container-low">
               <p className="text-on-surface-variant font-mono text-xs mb-2">VLM SYNTHESIS LOG:</p>
-              <p className="text-on-surface text-sm leading-relaxed border-l-2 border-outline-variant/50 pl-4">{videoModal.report}</p>
+              <p className="text-on-surface text-sm leading-relaxed border-l-2 border-outline-variant/50 pl-4 mb-6">{videoModal.report}</p>
+
+              {/* Prominent back / close button */}
+              <button
+                id="close-playback-btn"
+                onClick={() => setVideoModal(null)}
+                className="w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-lg border border-outline-variant/60 bg-surface-container hover:bg-surface-container-high text-on-surface font-mono text-sm transition-colors group"
+              >
+                <ArrowLeft size={16} className="group-hover:-translate-x-1 transition-transform" />
+                Back to Archive
+              </button>
             </div>
           </div>
         </div>

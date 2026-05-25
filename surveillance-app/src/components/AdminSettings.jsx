@@ -25,7 +25,8 @@ export default function AdminSettings() {
   
   const [systemInfo, setSystemInfo] = useState(null)
   const [logs, setLogs] = useState([])
-  const logsEndRef = useRef(null)
+  const logContainerRef = useRef(null)   // ref on the scrollable div, NOT a sentinel element
+  const userScrolledUp = useRef(false)   // true when user has scrolled up inside the log box
 
   const addLog = useCallback((type, msg) => {
     setLogs(prev => {
@@ -99,8 +100,13 @@ export default function AdminSettings() {
     })
   }, [])
 
+  // Scroll the terminal box to the bottom when new logs arrive —
+  // but ONLY if the user hasn't scrolled up to read old entries.
+  // Uses scrollTop on the container div so the page itself never jumps.
   useEffect(() => {
-    logsEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+    const el = logContainerRef.current
+    if (!el || userScrolledUp.current) return
+    el.scrollTop = el.scrollHeight
   }, [logs])
 
   const handleSave = async () => {
@@ -425,7 +431,17 @@ export default function AdminSettings() {
               <div className="w-3 h-3 rounded-full bg-emerald-500 border border-emerald-600"></div>
             </div>
           </div>
-          <div className="flex-1 overflow-y-auto p-4 font-mono text-[11px] leading-relaxed relative">
+          <div
+            ref={logContainerRef}
+            className="flex-1 overflow-y-auto p-4 font-mono text-[11px] leading-relaxed relative"
+            onScroll={() => {
+              const el = logContainerRef.current
+              if (!el) return
+              // If user scrolls more than 60px from the bottom, pause auto-scroll
+              const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+              userScrolledUp.current = distFromBottom > 60
+            }}
+          >
             <div className="absolute top-0 left-0 w-full h-4 bg-gradient-to-b from-[#020617] to-transparent sticky z-10 pointer-events-none"></div>
             {logs.map((log, i) => {
               let colorClass = 'text-outline'
@@ -442,7 +458,6 @@ export default function AdminSettings() {
                 </div>
               )
             })}
-            <div ref={logsEndRef} />
           </div>
         </section>
         

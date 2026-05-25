@@ -1,0 +1,44 @@
+AI Surveillance System - Technical Project Description
+
+### Project Overview
+The AI Surveillance System is a full-stack, real-time exam proctoring application. Its primary function is to monitor live video feeds of exam halls to detect unauthorized cell phone usage using AI object detection. When a phone is detected, the system maps the detection to a specific coordinate on a virtual grid, triggers real-time alerts on a dashboard, and automatically records and archives a video clip of the violation for later review.
+
+### Architecture & Technical Stack
+
+The project follows a decoupled architecture, split between a Python-based computer vision backend and a React-based frontend dashboard.
+
+#### 1. AI & Computer Vision (The Backend Engine)
+The core detection logic is handled in Python, designed for high performance and low latency.
+*   YOLOv8 (Ultralytics & PyTorch): The system utilizes the YOLOv8 model (specifically yolov8m.pt for medium accuracy/speed balance, falling back to yolov8n.pt for nano-speed) to perform real-time object detection. It is specifically filtered to target COCO class 67 (cell phones) with a configurable confidence threshold.
+*   OpenCV (cv2): Serves as the backbone for video processing. It handles:
+    *   Hardware camera interfacing and frame grabbing.
+    *   Frame annotation (drawing bounding boxes, grid lines, text labels, and confidence scores).
+    *   Encoding frames into JPEG byte streams for web transmission.
+    *   Video writing (using VideoWriter with mp4v codec) to save evidence clips when a detection occurs.
+*   Multithreading Architecture: To prevent the heavy YOLO inference from causing frame lag, the backend employs a multi-threaded design:
+    *   One thread continuously pulls the latest frame from the camera buffer.
+    *   One thread encodes the annotated frames into JPEGs for streaming.
+    *   The main detection loop runs independently, reading the latest frame, running inference, and updating a shared thread-safe state dictionary.
+
+#### 2. Backend API Server
+A lightweight web server exposes the detection engine to the frontend.
+*   Flask & Flask-CORS: A Python Flask application exposes the shared state and video streams via RESTful endpoints.
+*   Endpoints:
+    *   /stream: Streams the live annotated video feed using the MJPEG (Motion JPEG) format via a multipart/x-mixed-replace response.
+    *   /status: A fast JSON endpoint that the frontend polls. It returns the current detection status, grid coordinates, and whether the system is currently recording.
+    *   /snapshot: Returns a single current frame as a JPEG.
+    *   /grid-info: Provides the configured grid dimensions (Rows x Columns).
+
+#### 3. Frontend Web Application
+A modern, responsive dashboard for administrators to monitor the exam halls.
+*   React.js (via Vite): The frontend is built using React, bootstrapped with Vite for fast HMR (Hot Module Replacement) and optimized builds.
+*   State Management (Zustand): Uses Zustand for lightweight global state management, specifically handling user authentication sessions and the real-time queue of detection alerts.
+*   Styling (Tailwind CSS): The UI is constructed using Tailwind CSS, featuring a professional, dark-themed aesthetic optimized for extended monitoring sessions. It is fully responsive across mobile, tablet, and desktop.
+*   Routing (React Router): Manages navigation between different views: Live Feeds, Alert History, Video Records Archive, and Admin settings.
+*   API Client (Axios): Handles asynchronous requests to the Flask backend, specifically polling the /status endpoint to sync UI alerts with backend detections.
+*   Icons: Utilizes Lucide React for clean, consistent UI iconography.
+
+### Key Technical Features
+*   Virtual Grid Mapping: The backend mathematically divides the camera frame into a grid (e.g., 5 rows x 6 columns). When YOLO detects a phone's bounding box, the system calculates the center point and maps it to a specific Row X, Column Y cell, allowing proctors to instantly locate the examinee in the physical room.
+*   Intelligent Auto-Recording: The ClipRecorder class manages evidence collection. It starts an MP4 recording the moment a phone is detected and implements a "touch" mechanism—it keeps recording as long as the phone is visible and continues for a configurable buffer period (e.g., 5 seconds) after the phone disappears to capture the full context.
+*   Real-time Polling vs WebSockets: Instead of using heavy WebSockets, the system streams the video natively via MJPEG and uses high-frequency API polling (via custom React hooks) to fetch the lightweight JSON status, ensuring the React UI stays in sync with the Python backend without complex socket management.

@@ -2,6 +2,7 @@ import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-d
 import useAuthStore from './context/authStore'
 import Home from './pages/Home'
 import Login from './pages/Login'
+import AdminLogin from './pages/AdminLogin'
 import AdminPanel from './pages/AdminPanel'
 import Dashboard from './pages/Dashboard'
 
@@ -12,7 +13,7 @@ function ProtectedRoute({ children }) {
 
 function AdminRoute({ children }) {
   const { user } = useAuthStore()
-  return user?.isAdmin ? children : <Navigate to="/" replace />
+  return user?.isAdmin ? children : <Navigate to="/admin-login" replace />
 }
 
 export default function App() {
@@ -21,7 +22,17 @@ export default function App() {
       <Routes>
         <Route path="/" element={<Home />} />
         <Route path="/login" element={<Login />} />
-        <Route path="/admin" element={<AdminPanel />} />
+        <Route path="/admin-login" element={<AdminLogin />} />
+        <Route
+          path="/admin"
+          element={
+            <ProtectedRoute>
+              <AdminRoute>
+                <AdminPanel />
+              </AdminRoute>
+            </ProtectedRoute>
+          }
+        />
         <Route
           path="/dashboard"
           element={

@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { Video, AlertTriangle, UserCheck } from 'lucide-react'
 import { useDetectionStatus, useGridInfo } from '../hooks/useDetection'
 import useAlertStore from '../context/alertStore'
+import useRecordingStore from '../context/recordingStore'
 import { apiService } from '../services/api'
 
 export default function LiveHub() {
@@ -10,8 +11,17 @@ export default function LiveHub() {
   const { status, error } = useDetectionStatus(examHall)
   const { gridInfo } = useGridInfo()
   const { alerts, addAlert } = useAlertStore()
-  
+
+  // Recording preferences live in a global Zustand store so they survive
+  // navigation between tabs (LiveHub unmounting doesn't reset them).
+  const { autoRecord, manualRecord, syncFromBackend, toggleAutoRecord, toggleManualRecord } = useRecordingStore()
+
   const [identifiedFaces, setIdentifiedFaces] = useState([])
+
+  // Sync recording prefs from backend — store ignores this after the first load.
+  useEffect(() => {
+    if (status) syncFromBackend(status)
+  }, [status, syncFromBackend])
 
   // Trigger alert when any backend anomaly is detected
   useEffect(() => {
@@ -83,44 +93,28 @@ export default function LiveHub() {
           </div>
           <div className="flex items-center gap-3">
             <button
-              onClick={async () => {
-                const newState = !status?.manual_record;
-                try {
-                  await fetch('http://localhost:5000/manual-record', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ enabled: newState })
-                  });
-                } catch (e) { console.error(e) }
-              }}
+              id="manual-rec-btn"
+              onClick={toggleManualRecord}
               className={`font-mono text-xs px-3 py-1.5 rounded flex items-center gap-2 transition-colors ${
-                status?.manual_record 
-                ? 'bg-error text-on-error shadow-[0_0_15px_rgba(248,113,113,0.3)] border border-error' 
+                manualRecord
+                ? 'bg-error text-on-error shadow-[0_0_15px_rgba(248,113,113,0.3)] border border-error'
                 : 'bg-surface-container border border-outline-variant text-on-surface-variant hover:bg-surface-container-high'
               }`}
             >
-              <div className={`w-2 h-2 rounded-full ${status?.manual_record ? 'bg-white animate-pulse' : 'bg-error'}`}></div>
-              {status?.manual_record ? 'STOP REC' : 'START REC'}
+              <div className={`w-2 h-2 rounded-full ${manualRecord ? 'bg-white animate-pulse' : 'bg-error'}`}></div>
+              {manualRecord ? 'STOP REC' : 'START REC'}
             </button>
             <button
-              onClick={async () => {
-                const newState = !(status?.auto_record !== false);
-                try {
-                  await fetch('http://localhost:5000/toggle-recording', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ enabled: newState })
-                  });
-                } catch (e) { console.error(e) }
-              }}
+              id="auto-rec-btn"
+              onClick={toggleAutoRecord}
               className={`font-mono text-xs px-3 py-1.5 rounded flex items-center gap-2 transition-colors ${
-                status?.auto_record !== false 
-                ? 'bg-error/20 border border-error/50 text-error shadow-[0_0_10px_rgba(248,113,113,0.1)]' 
+                autoRecord
+                ? 'bg-error/20 border border-error/50 text-error shadow-[0_0_10px_rgba(248,113,113,0.1)]'
                 : 'bg-surface-container border border-outline-variant text-on-surface-variant'
               }`}
             >
-              <div className={`w-2 h-2 rounded-full ${status?.auto_record !== false ? 'bg-error animate-pulse' : 'bg-outline'}`}></div>
-              {status?.auto_record !== false ? 'AUTO-REC: ON' : 'AUTO-REC: OFF'}
+              <div className={`w-2 h-2 rounded-full ${autoRecord ? 'bg-error animate-pulse' : 'bg-outline'}`}></div>
+              {autoRecord ? 'AUTO-REC: ON' : 'AUTO-REC: OFF'}
             </button>
             <div className={`font-mono text-xs px-3 py-1.5 rounded flex items-center gap-2 ${
               error ? 'bg-error/20 border border-error/50 text-error' :

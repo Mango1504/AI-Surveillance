@@ -62,7 +62,7 @@ export default function Home() {
               Login
             </button>
             <button
-              onClick={() => navigate('/admin')}
+              onClick={() => navigate('/admin-login')}
               className="px-6 py-2 rounded-lg bg-accent text-secondary font-bold hover:opacity-90 transition"
             >
               Admin

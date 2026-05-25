@@ -4,7 +4,6 @@ import TopBar from '../components/TopBar'
 import LiveHub from '../components/LiveHub'
 import IncidentArchive from '../components/IncidentArchive'
 import StudentDirectory from '../components/StudentDirectory'
-import AdminSettings from '../components/AdminSettings'
 
 export default function Dashboard() {
   const [currentPage, setCurrentPage] = useState('live')
@@ -23,7 +22,6 @@ export default function Dashboard() {
           {currentPage === 'live' && <LiveHub />}
           {currentPage === 'directory' && <StudentDirectory />}
           {currentPage === 'archive' && <IncidentArchive />}
-          {currentPage === 'admin' && <AdminSettings />}
         </main>
       </div>
     </div>
