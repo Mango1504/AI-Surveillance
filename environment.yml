@@ -1,0 +1,24 @@
+name: ai-surveillance
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - pip
+  - pip:
+    - flask
+    - flask-cors
+    - flask-socketio
+    - cryptography
+    - psutil
+    - opencv-python==4.11.0.86
+    - opencv-contrib-python==4.11.0.86
+    - numpy==1.26.4
+    - ultralytics
+    - mediapipe==0.10.21
+    - deepface
+    - tf-keras==2.16.0
+    - tensorflow==2.16.2
+    - requests
+    - pytest
+    - flake8
