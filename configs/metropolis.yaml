@@ -1,0 +1,41 @@
+# NVIDIA Metropolis Pipeline Configuration
+
+# Pipeline selection: "auto" | "metropolis" | "legacy" | "hybrid"
+pipeline_mode: "auto"
+
+# TensorRT Model Export
+tensorrt_engine_path: "models/yolov8m_fp16.engine"
+tensorrt_precision: "fp16"  # "fp16" | "int8" | "fp32"
+tensorrt_max_batch: 8
+tensorrt_workspace_mb: 4096
+
+# DeepStream Pipeline
+deepstream_config_path: "configs/deepstream_app.txt"
+deepstream_tracker: "bytetrack"  # "deepsort" | "bytetrack" | "nvdcf"
+deepstream_batch_size: 4
+
+# Triton Inference Server
+triton_server_url: "localhost:8001"
+triton_model_name: "yolov8_ensemble"
+triton_dynamic_batching: true
+triton_max_queue_delay_us: 100
+
+# Multi-Camera Tracking
+tracker_algorithm: "bytetrack"
+tracker_max_age: 30
+tracker_min_hits: 3
+cross_camera_reid: true
+reid_threshold: 0.7
+
+# Event Streaming
+broker_type: "kafka"  # "kafka" | "mqtt" | "none"
+kafka_bootstrap_servers: "localhost:9092"
+mqtt_broker_url: "localhost:1883"
+event_topics:
+  alerts: "surveillance.alerts"
+  tracks: "surveillance.tracks"
+  raw: "surveillance.detections.raw"
+
+# Benchmarking
+benchmark_warmup_iterations: 50
+benchmark_test_iterations: 1000

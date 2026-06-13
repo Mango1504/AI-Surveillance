@@ -1,0 +1,170 @@
+%YAML:1.0
+# =============================================================================
+# NvMultiObjectTracker Configuration
+# NVIDIA Metropolis AI Surveillance Pipeline
+#
+# This file configures the nvtracker element in the DeepStream pipeline.
+# It supports multiple tracking algorithms: ByteTrack, DeepSORT, and NvDCF.
+# The active tracker is selected via the DeepStream pipeline configuration.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# BaseConfig: Common settings shared across all tracking algorithms
+# -----------------------------------------------------------------------------
+BaseConfig:
+  # Minimum detector confidence to consider a detection for tracking.
+  # Detections below this threshold are discarded before association.
+  minDetectorConfidence: 0.25
+
+  # Minimum tracker confidence to maintain a track.
+  # Tracks falling below this confidence are candidates for deletion.
+  minTrackerConfidence: 0.5
+
+  # Minimum matching score for overall association between detections and tracks.
+  # Lower values allow more lenient matching; higher values require closer matches.
+  minMatchingScore4Overall: 0.3
+
+  # Minimum trail length (in frames) before a track is eligible for ReID input.
+  # Ensures only stable tracks are used for cross-camera re-identification.
+  minTrailLenForReidInput: 5
+
+  # Maximum number of frames a track can remain in "shadow" (unmatched) state
+  # before being deleted. Shadow tracks are predicted but not matched to detections.
+  maxShadowTrackingAge: 30
+
+  # Number of consecutive frames a new track must be matched before being confirmed.
+  # Tracks in probation are considered "tentative" and not reported externally.
+  probationAge: 3
+
+  # Number of frames after which an unmatched new track is terminated early.
+  # Prevents spurious single-frame detections from creating persistent tracks.
+  earlyTerminationAge: 1
+
+  # TargetManagement: Controls how tracked targets are managed per stream
+  TargetManagement:
+    # Enable bounding box un-clipping to allow boxes extending beyond frame edges.
+    # 1 = enabled, 0 = disabled. Useful for objects partially out of frame.
+    enableBboxUnClipping: 1
+
+    # Maximum number of tracked targets allowed per stream.
+    # Limits memory usage and computation in crowded scenes.
+    maxTargetsPerStream: 150
+
+    # Minimum IoU difference required to create a new target from an unmatched detection.
+    # Prevents duplicate tracks for overlapping detections.
+    minIouDiff4NewTarget: 0.5
+
+    # Whether to preserve the order of stream updates.
+    # 0 = allow parallel processing, 1 = strict sequential order.
+    preserveStreamUpdateOrder: 0
+
+    # Maximum shadow tracking age within target management (mirrors base config).
+    maxShadowTrackingAge: 30
+
+    # Probation age within target management (mirrors base config).
+    probationAge: 3
+
+    # Early termination age within target management (mirrors base config).
+    earlyTerminationAge: 1
+
+# -----------------------------------------------------------------------------
+# ByteTrack: High-performance multi-object tracker using two-pass association
+#
+# ByteTrack associates detections in two passes:
+#   1. High-confidence detections are matched to existing tracks via IoU
+#   2. Low-confidence detections are matched to remaining unmatched tracks
+# This approach recovers occluded objects that produce low-confidence detections.
+# Reference: https://arxiv.org/abs/2110.06864
+# -----------------------------------------------------------------------------
+ByteTrack:
+  # Confidence threshold for "high-confidence" detections in the first pass.
+  # Detections above this threshold are prioritized for matching.
+  trackHighThresh: 0.5
+
+  # Confidence threshold for "low-confidence" detections in the second pass.
+  # Detections between trackLowThresh and trackHighThresh are used for recovery.
+  trackLowThresh: 0.1
+
+  # Minimum confidence to initialize a new track from an unmatched detection.
+  # Higher values prevent noisy detections from spawning new tracks.
+  newTrackThresh: 0.6
+
+  # Number of frames to buffer lost tracks before deletion.
+  # Lost tracks are kept for this many frames in case the object reappears.
+  trackBuffer: 30
+
+  # IoU matching threshold for the association step.
+  # Detection-track pairs with IoU below this threshold are not matched.
+  matchThresh: 0.8
+
+# -----------------------------------------------------------------------------
+# DeepSORT: Deep learning-enhanced SORT tracker with appearance embeddings
+#
+# DeepSORT extends SORT by incorporating appearance features (ReID embeddings)
+# alongside motion (Kalman filter) for more robust association.
+# It uses cosine distance on embeddings + Mahalanobis distance on motion.
+# Reference: https://arxiv.org/abs/1703.07402
+# -----------------------------------------------------------------------------
+DeepSORT:
+  # Maximum cosine distance between appearance embeddings for a valid match.
+  # Lower values require more similar appearances; higher values are more lenient.
+  maxCosineDistance: 0.3
+
+  # Maximum number of appearance embeddings to store per track (gallery budget).
+  # Older embeddings are discarded when the budget is exceeded (FIFO).
+  nnBudget: 100
+
+  # Maximum IoU distance for gating associations.
+  # Used as a secondary constraint alongside appearance matching.
+  maxIoUDistance: 0.7
+
+  # Maximum number of frames a track can remain unmatched before deletion.
+  # Equivalent to trackBuffer in ByteTrack.
+  maxAge: 30
+
+  # Number of consecutive detections required to confirm a new track.
+  # Tracks with fewer hits remain in "tentative" state.
+  nInit: 3
+
+# -----------------------------------------------------------------------------
+# NvDCF: NVIDIA Discriminative Correlation Filter tracker
+#
+# NvDCF is NVIDIA's proprietary visual tracker that uses correlation filters
+# with color histogram and HOG features for robust single-object tracking.
+# It provides high accuracy for surveillance scenarios with moderate occlusion.
+# Best suited for scenarios requiring visual tracking between detections.
+# -----------------------------------------------------------------------------
+NvDCF:
+  # Use unique IDs across streams (1 = enabled).
+  # Ensures track IDs are globally unique, not just per-stream unique.
+  useUniqueID: 1
+
+  # Use color name features for appearance modeling (1 = enabled).
+  # Color names provide illumination-invariant appearance representation.
+  useColorNames: 1
+
+  # Use Histogram of Oriented Gradients features (1 = enabled).
+  # HOG captures shape/edge information for robust tracking.
+  useHog: 1
+
+  # Maximum number of targets to track per stream.
+  # Limits computational cost in dense scenes.
+  maxTargetPerStream: 150
+
+  # Learning rate for the correlation filter update.
+  # Higher values adapt faster to appearance changes but may drift.
+  # Lower values are more stable but slower to adapt.
+  filterLr: 0.15
+
+  # Gaussian sigma for the spatial weighting window.
+  # Controls the spatial focus of the correlation filter response.
+  gaussianSigma: 0.75
+
+  # Scale factor for the search region padding around the target.
+  # Larger values search a wider area (better for fast motion, more computation).
+  searchRegionPaddingScale: 3
+
+  # Vertical offset factor for the feature focus point.
+  # Negative values shift focus upward (useful for pedestrian tracking
+  # where the upper body is more discriminative than feet).
+  featureFocusOffsetFactor_y: -0.2

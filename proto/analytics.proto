@@ -1,0 +1,69 @@
+// Protocol Buffer schema for AI Surveillance analytics metadata.
+// Defines structured message types for analytics events, object detections,
+// and tracked objects within the NVIDIA Metropolis-aligned pipeline.
+//
+// Version: 1.0.0
+
+syntax = "proto3";
+
+package surveillance.analytics;
+
+option java_package = "com.surveillance.analytics.proto";
+option go_package = "github.com/ai-surveillance/proto/analytics";
+
+// EventType categorizes the kind of analytics event produced by the pipeline.
+enum EventType {
+  EVENT_TYPE_UNSPECIFIED = 0;
+  OBJECT_DETECTED = 1;
+  TRACK_CREATED = 2;
+  ALERT_FIRED = 3;
+  TRACK_LOST = 4;
+}
+
+// BoundingBox represents a rectangular region in pixel coordinates.
+message BoundingBox {
+  int32 x1 = 1;  // Left edge x-coordinate
+  int32 y1 = 2;  // Top edge y-coordinate
+  int32 x2 = 3;  // Right edge x-coordinate
+  int32 y2 = 4;  // Bottom edge y-coordinate
+}
+
+// Detection represents a single object detection result from the inference pipeline.
+message Detection {
+  int32 class_id = 1;         // Numeric class identifier from the model
+  string class_name = 2;      // Human-readable class label (e.g., "person", "phone")
+  float confidence = 3;       // Detection confidence score [0.0, 1.0]
+  BoundingBox bbox = 4;       // Bounding box in pixel coordinates
+  int32 camera_id = 5;        // Source camera identifier
+  double timestamp = 6;       // Detection timestamp (Unix epoch seconds)
+  string track_id = 7;        // Associated track ID (empty if untracked)
+}
+
+// TrackedObject represents a persistently tracked object across frames.
+message TrackedObject {
+  string track_id = 1;            // Unique track identifier
+  int32 camera_id = 2;           // Source camera identifier
+  string class_name = 3;         // Object class label
+  BoundingBox bbox = 4;          // Current bounding box position
+  float velocity_x = 5;          // Estimated horizontal velocity (pixels/frame)
+  float velocity_y = 6;          // Estimated vertical velocity (pixels/frame)
+  int32 age = 7;                  // Total frames since track creation
+  int32 hits = 8;                 // Number of frames with matched detections
+  int32 time_since_update = 9;   // Frames since last matched detection
+  string state = 10;             // Track state: "tentative", "confirmed", "lost"
+  repeated float embedding = 11; // Appearance feature vector for re-identification
+}
+
+// AnalyticsEvent is the top-level message published to event streams.
+// Each event represents a discrete occurrence in the surveillance pipeline.
+message AnalyticsEvent {
+  string event_id = 1;                    // UUID v4 unique event identifier
+  EventType event_type = 2;              // Category of this event
+  double timestamp = 3;                   // Event timestamp (Unix epoch seconds)
+  int32 camera_id = 4;                   // Source camera identifier
+  string source_pipeline = 5;            // Pipeline origin: "metropolis" or "legacy"
+  repeated Detection objects = 6;        // Detected objects associated with this event
+  repeated TrackedObject tracks = 7;     // Tracked objects associated with this event
+  float risk_score = 8;                  // Computed risk score [0.0, 1.0]
+  map<string, string> metadata = 9;      // Extensible key-value metadata
+}

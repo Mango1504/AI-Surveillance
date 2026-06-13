@@ -26,6 +26,73 @@ from evidence import EvidenceCache
 from risk_engine import RiskEngine
 
 # ──────────────────────────────────────────────
+# METROPOLIS INTEGRATION (optional)
+# ──────────────────────────────────────────────
+_METROPOLIS_ENABLED = False
+_metropolis_orchestrator = None
+
+def _init_metropolis():
+    """Attempt to initialize the Metropolis pipeline orchestrator.
+
+    Metropolis mode is activated when EITHER:
+      - The environment variable METROPOLIS_ENABLED=1 is set, OR
+      - The config file configs/metropolis.yaml exists
+
+    When enabled, loads MetropolisConfig, creates a PipelineOrchestrator,
+    detects hardware capabilities, and selects the optimal pipeline.
+
+    Returns:
+        PipelineOrchestrator instance if enabled and initialized, else None.
+    """
+    import logging
+
+    # Check activation conditions
+    env_enabled = os.environ.get("METROPOLIS_ENABLED", "0") == "1"
+    config_path = os.path.join(os.path.dirname(__file__), "..", "..", "configs", "metropolis.yaml")
+    config_exists = os.path.isfile(config_path)
+
+    if not env_enabled and not config_exists:
+        return None
+
+    try:
+        from metropolis import MetropolisConfig, PipelineOrchestrator
+
+        # Load configuration
+        if config_exists:
+            metro_config = MetropolisConfig.from_yaml(config_path)
+            print(f"[METROPOLIS] Config loaded from {config_path}")
+        else:
+            metro_config = MetropolisConfig()
+            print("[METROPOLIS] Using default configuration")
+
+        # Create orchestrator, detect capabilities, select pipeline
+        orchestrator = PipelineOrchestrator(metro_config)
+        caps = orchestrator.detect_capabilities()
+        pipeline = orchestrator.select_pipeline()
+
+        print(f"[METROPOLIS] Capabilities: GPU={caps.has_gpu} ({caps.gpu_name}), "
+              f"TensorRT={caps.has_tensorrt}, DeepStream={caps.has_deepstream}, "
+              f"Triton={caps.has_triton}")
+        print(f"[METROPOLIS] Selected pipeline: '{pipeline}'")
+
+        return orchestrator
+
+    except ImportError as e:
+        logging.getLogger(__name__).warning(
+            "Metropolis package not available: %s. Falling back to legacy pipeline.", e
+        )
+        return None
+    except Exception as e:
+        logging.getLogger(__name__).error(
+            "Failed to initialize Metropolis orchestrator: %s. Falling back to legacy pipeline.", e
+        )
+        return None
+
+# Attempt Metropolis initialization at module load time
+_metropolis_orchestrator = _init_metropolis()
+_METROPOLIS_ENABLED = _metropolis_orchestrator is not None
+
+# ──────────────────────────────────────────────
 # SYSTEM INITIALIZATION
 # ──────────────────────────────────────────────
 config = get_config()
@@ -1034,6 +1101,32 @@ def stream():
             time.sleep(1.0 / 60.0)  # 60 FPS live feed
     return Response(generate(), mimetype="multipart/x-mixed-replace; boundary=frame")
 
+
+# ── Metropolis Status Endpoint ──
+@app.route('/metropolis/status')
+def metropolis_status():
+    """Return current Metropolis pipeline status and capabilities."""
+    if not _METROPOLIS_ENABLED or _metropolis_orchestrator is None:
+        return jsonify({
+            "enabled": False,
+            "active_pipeline": "legacy",
+            "capabilities": None,
+        })
+    caps = _metropolis_orchestrator.capabilities
+    return jsonify({
+        "enabled": True,
+        "active_pipeline": _metropolis_orchestrator.active_pipeline,
+        "is_running": _metropolis_orchestrator.is_running,
+        "capabilities": {
+            "has_gpu": caps.has_gpu if caps else False,
+            "gpu_name": caps.gpu_name if caps else None,
+            "has_tensorrt": caps.has_tensorrt if caps else False,
+            "has_deepstream": caps.has_deepstream if caps else False,
+            "has_triton": caps.has_triton if caps else False,
+        } if caps else None,
+        "config": _metropolis_orchestrator.config.to_dict(),
+    })
+
 # ──────────────────────────────────────────────
 # ENTRY POINT
 # ──────────────────────────────────────────────
@@ -1042,6 +1135,14 @@ def shutdown():
         return
     print("[SHUTDOWN] Flushing queues, closing cameras, saving session.")
     shutdown_event.set()
+    # Stop Metropolis orchestrator if running
+    if _METROPOLIS_ENABLED and _metropolis_orchestrator is not None:
+        try:
+            if _metropolis_orchestrator.is_running:
+                _metropolis_orchestrator.stop()
+                print("[METROPOLIS] Pipeline stopped")
+        except Exception as e:
+            print(f"[METROPOLIS] Error during shutdown: {e}")
     throttle.stop()
     cam_stream.stop()
     disk_writer.stop()
@@ -1066,6 +1167,17 @@ def run_server():
     print("[ORCHESTRATOR] Initializing multi-threaded pipeline...")
 
     if not _pipeline_started:
+        # Start Metropolis orchestrator if enabled (non-legacy pipeline)
+        if _METROPOLIS_ENABLED and _metropolis_orchestrator is not None:
+            active = _metropolis_orchestrator.active_pipeline
+            if active and active != "legacy":
+                try:
+                    _metropolis_orchestrator.start()
+                    print(f"[METROPOLIS] Pipeline '{active}' started successfully")
+                except Exception as e:
+                    print(f"[METROPOLIS] Failed to start pipeline: {e}. Falling back to legacy.")
+
+        # Legacy pipeline always starts — it serves as the default and fallback
         cam_stream.start()
 
         # Spawn Detection Pool

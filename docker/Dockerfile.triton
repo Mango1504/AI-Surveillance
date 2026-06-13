@@ -1,0 +1,34 @@
+# =============================================================================
+# Dockerfile.triton
+# NVIDIA Triton Inference Server with custom YOLOv8 model repository
+# Extends the official NGC Triton image with project-specific models
+# =============================================================================
+# Requirement 4.1: Built from official NVIDIA NGC base image with pinned tag
+# Requirement 3.1: Triton model repository with ensemble pipeline
+
+# Base image: NGC Triton Inference Server (pinned tag)
+FROM nvcr.io/nvidia/tritonserver:24.01-py3
+
+# Labels for image metadata
+LABEL maintainer="AI Surveillance Team"
+LABEL version="1.0.0"
+LABEL description="NVIDIA Triton Inference Server with YOLOv8 ensemble model repository for AI Surveillance"
+LABEL org.opencontainers.image.source="https://github.com/ai-surveillance"
+LABEL org.opencontainers.image.base.name="nvcr.io/nvidia/tritonserver:24.01-py3"
+
+# Copy the model repository into the container
+# Includes: yolov8_preprocessing, yolov8_detector, yolov8_postprocessing, yolov8_ensemble
+COPY models/ /models
+
+# Expose Triton server ports
+# 8000: HTTP inference API
+# 8001: gRPC inference API
+# 8002: Prometheus metrics
+EXPOSE 8000 8001 8002
+
+# Health check using Triton's HTTP health endpoint
+HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=3 \
+    CMD curl -f http://localhost:8000/v2/health/ready || exit 1
+
+# Start Triton Inference Server with the model repository
+CMD ["tritonserver", "--model-repository=/models", "--strict-model-config=false"]

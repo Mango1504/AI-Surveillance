@@ -1,0 +1,148 @@
+# =============================================================================
+# Docker Compose: NVIDIA Metropolis AI Surveillance Full Stack
+# Services: app, triton, kafka, zookeeper
+# =============================================================================
+# Requirement 4.3: Full service stack with proper dependency ordering and health checks
+# Requirement 4.2: nvidia-container-toolkit runtime with GPU device access
+
+version: "3.8"
+
+services:
+  # ---------------------------------------------------------------------------
+  # Zookeeper: Required by Kafka for cluster coordination
+  # ---------------------------------------------------------------------------
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: surveillance-zookeeper
+    ports:
+      - "2181:2181"
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+      ZOOKEEPER_SYNC_LIMIT: 2
+    healthcheck:
+      test: ["CMD-SHELL", "echo ruok | nc localhost 2181 | grep imok"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - surveillance-net
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Kafka: Event streaming broker for analytics events
+  # ---------------------------------------------------------------------------
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: surveillance-kafka
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:9092"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    networks:
+      - surveillance-net
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Triton Inference Server: GPU-accelerated model serving
+  # ---------------------------------------------------------------------------
+  triton:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.triton
+    container_name: surveillance-triton
+    ports:
+      - "8000:8000"  # HTTP inference API
+      - "8001:8001"  # gRPC inference API
+      - "8002:8002"  # Prometheus metrics
+    runtime: nvidia
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    volumes:
+      - ../models:/models:ro
+    security_opt:
+      - "no-new-privileges:true"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/v2/health/ready || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - surveillance-net
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # App: NVIDIA Metropolis AI Surveillance application
+  # ---------------------------------------------------------------------------
+  app:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.metropolis
+    container_name: surveillance-app
+    ports:
+      - "5000:5000"
+    runtime: nvidia
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    environment:
+      - TRITON_SERVER_URL=triton:8001
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+      - PIPELINE_MODE=auto
+    depends_on:
+      triton:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    volumes:
+      - ../configs:/app/configs:ro
+      - ../models:/app/models:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /app/__pycache__
+    security_opt:
+      - "no-new-privileges:true"
+    healthcheck:
+      test: ["CMD-SHELL", "python3.10 -c \"import urllib.request; urllib.request.urlopen('http://localhost:5000/status')\" || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    networks:
+      - surveillance-net
+    restart: unless-stopped
+
+# =============================================================================
+# Networks
+# =============================================================================
+networks:
+  surveillance-net:
+    driver: bridge
+    name: surveillance-network

@@ -1,0 +1,440 @@
+# =============================================================================
+# CI/CD Pipeline: NVIDIA Metropolis AI Surveillance
+# Implements: Tasks 11.1 - 11.5
+# =============================================================================
+# Task 11.1: Lint, unit test, and build stages
+# Task 11.2: Docker build and push for tagged releases
+# Task 11.3: Integration test stage with docker-compose
+# Task 11.4: GPU runner job for TensorRT validation
+# Task 11.5: Benchmark regression check
+
+name: Metropolis CI/CD
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  # ===========================================================================
+  # Task 11.1: Lint stage - flake8 code quality checks
+  # ===========================================================================
+  lint:
+    name: Lint (flake8)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install linting dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install flake8 flake8-docstrings flake8-import-order
+
+      - name: Run flake8
+        run: |
+          flake8 surveillance-app/backend/metropolis/ \
+            --count \
+            --select=E9,F63,F7,F82 \
+            --show-source \
+            --statistics
+          flake8 surveillance-app/backend/metropolis/ \
+            --count \
+            --max-complexity=10 \
+            --max-line-length=120 \
+            --statistics
+
+  # ===========================================================================
+  # Task 11.1: Unit test stage - pytest with coverage
+  # ===========================================================================
+  test:
+    name: Unit Tests (pytest)
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('environment.yml') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest pytest-cov hypothesis numpy scipy filterpy
+          pip install protobuf grpcio paho-mqtt confluent-kafka
+          pip install pyyaml dataclasses-json
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+      - name: Run unit tests with coverage
+        run: |
+          pytest tests/ \
+            --cov=surveillance-app/backend/metropolis \
+            --cov-report=xml:coverage.xml \
+            --cov-report=term-missing \
+            --cov-fail-under=80 \
+            --hypothesis-seed=0 \
+            -v \
+            --ignore=tests/integration \
+            --ignore=tests/gpu
+        env:
+          PYTHONPATH: surveillance-app/backend
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.xml
+
+  # ===========================================================================
+  # Task 11.1: Build stage - verify package imports
+  # ===========================================================================
+  build:
+    name: Build Verification
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install numpy scipy filterpy protobuf grpcio paho-mqtt
+          pip install confluent-kafka pyyaml dataclasses-json hypothesis
+
+      - name: Verify package imports
+        run: |
+          cd surveillance-app/backend
+          python -c "
+          import metropolis
+          from metropolis.config import MetropolisConfig
+          from metropolis.orchestrator import PipelineOrchestrator
+          from metropolis.tracker import MultiCameraTracker
+          from metropolis.schema import MetadataEncoder
+          from metropolis.streaming import EventPublisher
+          from metropolis.benchmark import BenchmarkRunner
+          print('All package imports successful')
+          "
+        env:
+          PYTHONPATH: surveillance-app/backend
+
+      - name: Verify CLI entry points
+        run: |
+          cd surveillance-app/backend
+          python -m metropolis.export_tensorrt --help || true
+          python -c "from metropolis.benchmark import BenchmarkRunner; print('Benchmark module OK')"
+        env:
+          PYTHONPATH: surveillance-app/backend
+
+  # ===========================================================================
+  # Task 11.2: Docker build and push for tagged releases (v*)
+  # ===========================================================================
+  docker-build:
+    name: Docker Build & Push
+    runs-on: ubuntu-latest
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata for Metropolis image
+        id: meta-metropolis
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/metropolis
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha
+
+      - name: Build and push Metropolis image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: docker/Dockerfile.metropolis
+          push: true
+          tags: ${{ steps.meta-metropolis.outputs.tags }}
+          labels: ${{ steps.meta-metropolis.outputs.labels }}
+
+      - name: Extract metadata for Triton image
+        id: meta-triton
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/triton
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha
+
+      - name: Build and push Triton image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: docker/Dockerfile.triton
+          push: true
+          tags: ${{ steps.meta-triton.outputs.tags }}
+          labels: ${{ steps.meta-triton.outputs.labels }}
+
+  # ===========================================================================
+  # Task 11.3: Integration test stage with docker-compose
+  # ===========================================================================
+  integration-test:
+    name: Integration Tests (E2E)
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest requests confluent-kafka numpy scipy
+          pip install protobuf grpcio paho-mqtt pyyaml filterpy
+
+      - name: Start docker-compose stack
+        run: |
+          docker compose -f docker/docker-compose.yml up -d --build
+        env:
+          DOCKER_BUILDKIT: 1
+
+      - name: Wait for services to be healthy
+        run: |
+          echo "Waiting for services to become healthy..."
+          timeout 120 bash -c '
+            until docker compose -f docker/docker-compose.yml ps | grep -q "healthy"; do
+              echo "Waiting for services..."
+              sleep 5
+            done
+          ' || echo "Timeout waiting for services (continuing anyway)"
+          docker compose -f docker/docker-compose.yml ps
+
+      - name: Run E2E integration tests
+        run: |
+          pytest tests/integration/ \
+            -v \
+            --timeout=120 \
+            --tb=short
+        env:
+          PYTHONPATH: surveillance-app/backend
+          TRITON_SERVER_URL: localhost:8001
+          KAFKA_BOOTSTRAP_SERVERS: localhost:9092
+
+      - name: Collect service logs on failure
+        if: failure()
+        run: |
+          docker compose -f docker/docker-compose.yml logs > docker-logs.txt 2>&1
+
+      - name: Upload docker logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-logs
+          path: docker-logs.txt
+
+      - name: Tear down docker-compose stack
+        if: always()
+        run: |
+          docker compose -f docker/docker-compose.yml down -v --remove-orphans
+
+  # ===========================================================================
+  # Task 11.4: GPU runner job for TensorRT validation
+  # ===========================================================================
+  gpu-validation:
+    name: TensorRT GPU Validation
+    runs-on: [self-hosted, gpu]
+    needs: build
+    if: github.event_name == 'push'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Verify GPU availability
+        run: |
+          nvidia-smi
+          python -c "import torch; print(f'CUDA available: {torch.cuda.is_available()}'); print(f'GPU: {torch.cuda.get_device_name(0)}')"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install numpy scipy filterpy protobuf grpcio
+          pip install pyyaml ultralytics onnx onnxruntime-gpu
+          pip install pytest torch torchvision
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+      - name: Run TensorRT export tests
+        run: |
+          pytest tests/gpu/ \
+            -v \
+            --timeout=300 \
+            -k "tensorrt or trt or export"
+        env:
+          PYTHONPATH: surveillance-app/backend
+
+      - name: Run TensorRT validation tests
+        run: |
+          pytest tests/gpu/ \
+            -v \
+            --timeout=300 \
+            -k "validation or accuracy"
+        env:
+          PYTHONPATH: surveillance-app/backend
+
+  # ===========================================================================
+  # Task 11.5: Benchmark regression check (main branch only)
+  # ===========================================================================
+  benchmark:
+    name: Benchmark Regression Check
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install numpy scipy filterpy protobuf grpcio
+          pip install pyyaml pytest hypothesis confluent-kafka paho-mqtt
+
+      - name: Restore benchmark baselines
+        uses: actions/cache@v4
+        with:
+          path: benchmarks/results/baselines
+          key: benchmark-baselines-${{ github.sha }}
+          restore-keys: |
+            benchmark-baselines-
+
+      - name: Run benchmarks
+        run: |
+          mkdir -p benchmarks/results/baselines
+          mkdir -p data/test_images
+          # Create minimal test data if not present
+          python -c "
+          import numpy as np
+          import os
+          os.makedirs('data/test_images', exist_ok=True)
+          for i in range(10):
+              img = np.random.randint(0, 255, (640, 640, 3), dtype=np.uint8)
+              np.save(f'data/test_images/test_{i}.npy', img)
+          print('Test data created')
+          "
+          python benchmarks/run_benchmarks.py \
+            --dataset data/test_images \
+            --pipelines legacy \
+            --iterations 100 \
+            --warmup 10 \
+            --output-dir benchmarks/results \
+            --check-regression \
+            --compare
+        env:
+          PYTHONPATH: surveillance-app/backend
+
+      - name: Check regression threshold
+        run: |
+          python -c "
+          import json
+          import os
+          import sys
+
+          results_dir = 'benchmarks/results'
+          baseline_dir = os.path.join(results_dir, 'baselines')
+          regression_threshold = 0.10  # 10% regression threshold
+
+          if not os.path.isdir(baseline_dir):
+              print('No baselines found, skipping regression check.')
+              sys.exit(0)
+
+          has_regression = False
+          for filename in os.listdir(results_dir):
+              if not filename.endswith('.json') or filename == 'comparison_report.json':
+                  continue
+              result_path = os.path.join(results_dir, filename)
+              baseline_path = os.path.join(baseline_dir, filename)
+
+              if not os.path.exists(baseline_path):
+                  print(f'No baseline for {filename}, skipping.')
+                  continue
+
+              with open(result_path) as f:
+                  result = json.load(f)
+              with open(baseline_path) as f:
+                  baseline = json.load(f)
+
+              # Compare FPS (lower is regression)
+              if 'fps' in result and 'fps' in baseline:
+                  fps_change = (baseline['fps'] - result['fps']) / baseline['fps']
+                  if fps_change > regression_threshold:
+                      print(f'REGRESSION in {filename}: FPS dropped {fps_change*100:.1f}% (threshold: {regression_threshold*100}%)')
+                      has_regression = True
+                  else:
+                      print(f'OK {filename}: FPS change {fps_change*100:.1f}%')
+
+          if has_regression:
+              print('\\n❌ Benchmark regression exceeds 10% threshold!')
+              sys.exit(1)
+          else:
+              print('\\n✓ No benchmark regressions detected.')
+              sys.exit(0)
+          "
+
+      - name: Save baselines on success
+        if: success()
+        run: |
+          mkdir -p benchmarks/results/baselines
+          cp benchmarks/results/*.json benchmarks/results/baselines/ 2>/dev/null || true
+
+      - name: Upload benchmark results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: benchmarks/results/

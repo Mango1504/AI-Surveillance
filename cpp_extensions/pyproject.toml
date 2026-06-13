@@ -1,0 +1,12 @@
+[build-system]
+requires = ["setuptools>=45", "pybind11>=2.11", "cmake>=3.18", "ninja"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "metropolis_cpp"
+version = "0.1.0"
+description = "C++ CUDA extensions for NVIDIA Metropolis integration"
+requires-python = ">=3.8"
+
+[project.optional-dependencies]
+dev = ["pytest", "numpy"]

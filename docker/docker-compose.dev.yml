@@ -1,0 +1,69 @@
+# =============================================================================
+# Docker Compose: Development Overrides for NVIDIA Metropolis AI Surveillance
+# Usage: docker compose -f docker/docker-compose.yml -f docker/docker-compose.dev.yml up
+# =============================================================================
+# Requirement 4.4: Development-mode overrides with volume mounts and debug ports
+
+version: "3.8"
+
+services:
+  # ---------------------------------------------------------------------------
+  # App: Development overrides for live reloading and debugging
+  # ---------------------------------------------------------------------------
+  app:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.metropolis
+      target: development
+    container_name: surveillance-app-dev
+    ports:
+      - "5000:5000"   # Flask application
+      - "5678:5678"   # debugpy remote debugger
+    environment:
+      - FLASK_DEBUG=1
+      - FLASK_ENV=development
+      - PYTHONDONTWRITEBYTECODE=1
+      - PYTHONUNBUFFERED=1
+      - LOG_LEVEL=DEBUG
+      - TRITON_SERVER_URL=triton:8001
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+      - PIPELINE_MODE=auto
+    volumes:
+      # Mount source code for live reloading
+      - ../surveillance-app/backend:/app/backend
+      # Mount configs for easy editing
+      - ../configs:/app/configs
+      # Mount models (read-write for development)
+      - ../models:/app/models
+    entrypoint: ["python", "-m", "debugpy", "--listen", "0.0.0.0:5678", "--wait-for-client", "-m", "flask", "run", "--host", "0.0.0.0", "--port", "5000", "--reload"]
+    restart: "no"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:5000/status || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # ---------------------------------------------------------------------------
+  # Triton: Development overrides (writable models for iteration)
+  # ---------------------------------------------------------------------------
+  triton:
+    container_name: surveillance-triton-dev
+    volumes:
+      # Mount models as read-write for development iteration
+      - ../models:/models
+    restart: "no"
+
+  # ---------------------------------------------------------------------------
+  # Kafka: Development overrides (no restart for easier debugging)
+  # ---------------------------------------------------------------------------
+  kafka:
+    container_name: surveillance-kafka-dev
+    restart: "no"
+
+  # ---------------------------------------------------------------------------
+  # Zookeeper: Development overrides (no restart for easier debugging)
+  # ---------------------------------------------------------------------------
+  zookeeper:
+    container_name: surveillance-zookeeper-dev
+    restart: "no"

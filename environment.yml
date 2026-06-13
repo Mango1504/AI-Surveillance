@@ -22,3 +22,16 @@ dependencies:
     - requests
     - pytest
     - flake8
+    # NVIDIA Metropolis integration dependencies
+    - tensorrt>=8.6
+    - tritonclient[grpc]>=2.40
+    - confluent-kafka>=2.3
+    - paho-mqtt>=1.6
+    - protobuf>=4.24
+    - scipy>=1.11
+    - filterpy>=1.4
+    - hypothesis>=6.90
+    - pybind11>=2.11
+    - pynvml>=11.5
+    - grpcio>=1.59
+    - PyYAML>=6.0

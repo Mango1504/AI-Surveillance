@@ -1,0 +1,126 @@
+# =============================================================================
+# Dockerfile.metropolis
+# NVIDIA Metropolis-aligned AI Surveillance Application
+# Multi-stage build: builder (compile deps) + runtime (minimal image)
+# =============================================================================
+# Requirement 4.1: Built from official NVIDIA NGC base image with pinned tag
+
+# ---------------------------------------------------------------------------
+# Stage 1: Builder — install Python packages into a virtual environment
+# ---------------------------------------------------------------------------
+FROM nvcr.io/nvidia/cuda:12.2.2-runtime-ubuntu22.04 AS builder
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install Python 3.10, pip, and build essentials for compiled packages
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3.10 \
+        python3.10-venv \
+        python3-pip \
+        python3.10-dev \
+        build-essential \
+        cmake \
+        git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create virtual environment
+RUN python3.10 -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Upgrade pip
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel
+
+# Copy dependency files first (layer caching)
+COPY environment.yml /tmp/environment.yml
+
+# Install Python dependencies from environment.yml pip section
+# We extract pip deps and install directly (no conda in Docker)
+# Core application dependencies
+RUN pip install --no-cache-dir \
+        flask \
+        flask-cors \
+        flask-socketio \
+        cryptography \
+        psutil \
+        opencv-python==4.11.0.86 \
+        opencv-contrib-python==4.11.0.86 \
+        numpy==1.26.4 \
+        ultralytics \
+        mediapipe==0.10.21 \
+        deepface \
+        tf-keras==2.16.0 \
+        tensorflow==2.16.2 \
+        requests \
+        pytest
+
+# NVIDIA Metropolis integration dependencies
+RUN pip install --no-cache-dir \
+        "tritonclient[grpc]>=2.40" \
+        "confluent-kafka>=2.3" \
+        "paho-mqtt>=1.6" \
+        "protobuf>=4.24" \
+        "scipy>=1.11" \
+        "filterpy>=1.4" \
+        "pybind11>=2.11" \
+        "pynvml>=11.5" \
+        "grpcio>=1.59" \
+        "PyYAML>=6.0"
+
+# ---------------------------------------------------------------------------
+# Stage 2: Runtime — minimal image with only what's needed to run
+# ---------------------------------------------------------------------------
+FROM nvcr.io/nvidia/cuda:12.2.2-runtime-ubuntu22.04 AS runtime
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install Python runtime and system libraries required by OpenCV / mediapipe
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3.10 \
+        python3.10-venv \
+        libgl1 \
+        libglib2.0-0 \
+        libsm6 \
+        libxext6 \
+        libxrender1 \
+        libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy virtual environment from builder stage
+COPY --from=builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+ENV PYTHONUNBUFFERED=1
+
+# Set working directory
+WORKDIR /app
+
+# Copy application code
+COPY surveillance-app/backend/ /app/backend/
+
+# Copy configuration and model directories
+COPY configs/ /app/configs/
+COPY models/ /app/models/
+
+# Copy environment file for reference
+COPY environment.yml /app/environment.yml
+
+# Expose Flask port
+EXPOSE 5000
+
+# Labels for image metadata
+LABEL maintainer="AI Surveillance Team"
+LABEL version="1.0.0"
+LABEL description="NVIDIA Metropolis-aligned AI Surveillance application with TensorRT, Triton, and DeepStream support"
+LABEL org.opencontainers.image.source="https://github.com/ai-surveillance"
+LABEL org.opencontainers.image.base.name="nvcr.io/nvidia/cuda:12.2.2-runtime-ubuntu22.04"
+
+# Run as non-root user for security
+RUN useradd --create-home --shell /bin/bash appuser \
+    && chown -R appuser:appuser /app
+USER appuser
+
+# Health check for the Flask application
+HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
+    CMD python3.10 -c "import urllib.request; urllib.request.urlopen('http://localhost:5000/status')" || exit 1
+
+# Entrypoint: run the Flask backend application
+ENTRYPOINT ["python3.10", "/app/backend/main.py"]
